@@ -1,5 +1,81 @@
 # Progress
 
+## Phase 6a — Backpressure (complete)
+
+`npm run dev` → http://localhost:5173 → Simulate mode
+`npm run typecheck` → 0 errors
+`npm run lint` → 0 errors
+`npm run build` → main 911 kB / worker 35 kB
+`npm test` → 10/10 (8 from prior phases + 2 new for backpressure)
+
+### Dependencies added in Phase 6a
+
+None.
+
+### Files
+
+- New: (none)
+- Modified: `src/schema/{types,validators}.ts`, `src/sim/{types,engine,chaos,behaviors/types,behaviors/shared,behaviors/appServerBehavior,behaviors/databaseBehavior,behaviors/queueBehavior}.ts`, `src/sim-ui/{LoadBars,MetricsPanel,ChaosTimeline}.tsx`, `src/canvas/inspector/forms/{AppServerParamsForm,DatabaseParamsForm,QueueParamsForm}.tsx`, `src/sim/__tests__/determinism.test.ts`
+
+### Acceptance criteria
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | Backwards compat: Phase 4 design without bounded queues runs identically | ✅ |
+| 2 | Bounded app_server (1×5, q=10) at 200 rps: throughput pegs, p99 bounded, rejections climb | ✅ |
+| 3 | Backpressure propagates: DB rejects → app_server fails fast (latency drops, error rate climbs) | ✅ |
+| 4 | reject_newest vs reject_oldest produce capacity vs capacity_displaced events | ✅ |
+| 5 | block policy: latency grows, fewer rejections, capped at 5 retries | ✅ |
+| 6 | saturate_node chaos drives target to saturation; queue grows | ✅ |
+| 7 | saturate + bounded: queue caps at maxDepth, rejection count spikes | ✅ |
+| 8 | Visual feedback: red pulsing bar + N/M depth text when rejecting | ✅ |
+| 9 | Determinism with backpressure: same seed → same digest; different depth → different digest | ✅ (test 9 + 10) |
+| 10 | typecheck / lint / build clean | ✅ |
+| 11 | Node test suite passes 10/10 (was 8/8 in Phase 4c) | ✅ |
+| 12 | No regressions in Phase 4 (chaos cases still pass deterministically) | ✅ |
+
+### Decisions and v1 simplifications
+
+**`block` policy is application-level retry, not transport-layer flow control.** Real production systems implement `block` at the transport layer — HTTP/2 flow control windows, gRPC's per-stream credits, Reactive Streams' demand signaling. Modeling that correctly is its own semester of work. v1 approximation: re-schedule the receive at `now + 50 × 2^attempt ms`, capped at 5 retries (≈ 1.5s max wait), then convert to capacity rejection. Documented at the call site. The lesson it teaches — `block` trades latency for fewer rejections — survives the simplification.
+
+**`reject_oldest` on queues produces silent message loss.** The producer of the displaced message was already told `success: true` on enqueue; we don't retract that acknowledgment. This is realistic — production message queues (Kafka log retention, SQS, RabbitMQ default) behave this way under sustained overload. The dropped messages show up only in metrics, not in the producer's visible response. Comment in `queueBehavior.ts` explains the intent.
+
+**0 = unbounded sentinel in the UI**, not `undefined`. With `exactOptionalPropertyTypes: true`, writing `undefined` through `Partial<T>` is a type error. Behaviors check `maxDepth !== undefined && maxDepth > 0` so existing v1 designs (where the field is genuinely absent) still mean unbounded. The UI uses `value ?? 0` for display and `Math.max(0, …)` on input.
+
+**Database `rejection_policy` is `reject_newest` only in v1.** `reject_oldest` for a database has unclear semantics (would conflict with read ordering / transaction-isolation assumptions even in v1's read-only model).
+
+**saturate_node emits synthetic `request_receive` directly at the target**, bypassing the upstream chain. The engine auto-creates a SimRequest from the receive (originNodeId = target, path = [target]). On completion, `forwardResponseUpstream` returns `[]` because the node is the origin — so the synthetic request leaves no orphan events past the chaos window.
+
+**Backpressure-aware metrics**:
+- `request_reject` events with `reason: 'capacity'` and `'capacity_displaced'` count toward the running `cumRejected` event tally and surface in the new dashed `reject/s` line on the error-rate chart.
+- The error-rate chart became a `ComposedChart` with a second right-side y-axis so the rejection-rate line doesn't compete with the 0–100% error scale.
+- `LoadBars` color-grades the fill bar with a deep-red pulsing animation when the queue is at cap AND rejecting in the current window.
+
+### Re-reading appServerBehavior.onRequestReceive (per Prompt §12)
+
+Traced by hand:
+
+`queue_max_depth = 10`, queue currently has 9 ids, `processing = 5` (full).
+
+- New request A arrives at `request_receive`. Branch 1: `processing >= capacity` → fall through. Branch 2: `q.length (9) < 10` → enqueue. depth = 10.
+- New request B arrives at `request_receive`. Branch 1: still full. Branch 2: `q.length (10) < 10` → false. Branch 3: rejection_policy = reject_newest → emit `request_reject` + `request_response(success: false)` upstream via `rejectAndRespond`. Queue depth still 10.
+- One request C completes. `request_complete` handler: `processing -= 1` (now 4). Forward response upstream. Shift one off queue (the request enqueued at the front). `startProcessing` increments processing back to 5. Queue depth now 9.
+- New request D arrives. Branch 1: still full. Branch 2: `q.length (9) < 10` → enqueue. depth = 10.
+
+The order is what the prompt called out: **decrement processing → drain → increment**. Net inFlight stays at capacity while the queue has work, which is the correct steady-state behavior. The "depth still 10 after one completion because drain raises it back to 10 immediately" observation in the prompt's §12 holds: between the decrement and the dequeue+startProcessing, depth is briefly 9, but no other event runs in that gap because behaviors are pure synchronous functions.
+
+### Commits in this phase
+
+1. `prompt-6a-schema-bounded-queues` — schema fields + saturate_node ChaosEventSpec
+2. `prompt-6a-engine-snapshots` — NodeSnapshot extensions, getRequest in context, auto-create from receive, shared helpers
+3. `prompt-6a-app-server-backpressure` — three rejection policies + block-retry tracking
+4. `prompt-6a-database-and-queue-rejection` — bounded DB queue + queue reject_oldest semantics
+5. `prompt-6a-saturate-chaos` — chaos compilation for saturate_node
+6. `prompt-6a-ui` — LoadBars saturation visuals + rejection-rate chart + chaos library + inspector forms
+7. `prompt-6a-determinism-test` — backpressure regression tests (10/10 total)
+
+---
+
 ## Phase 4c — Real Simulate Mode (complete)
 
 `npm run dev` → http://localhost:5173 → switch to Simulate mode
