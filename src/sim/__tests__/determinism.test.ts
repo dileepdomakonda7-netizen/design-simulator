@@ -268,7 +268,74 @@ describe('engine determinism', () => {
     const shuffled = [...events].reverse()
     expect(computeDigest(shuffled)).toBe(computeDigest(events))
   })
+
+  it('chaos plan with end-time past duration: 3 runs at seed=42 are identical', async () => {
+    // User's exact reproducer: cache_miss_storm at 2000 with duration 3500
+    // (ends at 5500, past sim end 5000). The end-event is scheduled but never
+    // fires; we want digests to still match across runs.
+    const a = await runUserScenarioWithChaos(42, [
+      {
+        id: 'c1',
+        kind: 'cache_miss_storm',
+        node_id: 'ca',
+        at_ms: 2000,
+        duration_ms: 3500,
+      },
+    ])
+    const b = await runUserScenarioWithChaos(42, [
+      {
+        id: 'c1',
+        kind: 'cache_miss_storm',
+        node_id: 'ca',
+        at_ms: 2000,
+        duration_ms: 3500,
+      },
+    ])
+    const c = await runUserScenarioWithChaos(42, [
+      {
+        id: 'c1',
+        kind: 'cache_miss_storm',
+        node_id: 'ca',
+        at_ms: 2000,
+        duration_ms: 3500,
+      },
+    ])
+    expect(a.events.length).toBe(b.events.length)
+    expect(a.events).toEqual(b.events)
+    expect(a.events).toEqual(c.events)
+    expect(computeDigest(a.events)).toBe(computeDigest(b.events))
+    expect(computeDigest(a.events)).toBe(computeDigest(c.events))
+  })
 })
+
+async function runUserScenarioWithChaos(
+  seed: number,
+  chaos: SimRunConfig['chaos'],
+): Promise<{ events: SimEvent[] }> {
+  const events: SimEvent[] = []
+  const config: SimRunConfig = {
+    design: userScenarioDesign(),
+    traffic: [
+      {
+        id: 'src',
+        label: 'Test',
+        target_node_id: 'cli',
+        load_shape: { kind: 'constant', rps: 10 },
+      },
+    ],
+    chaos,
+    durationMs: 5000,
+    seed,
+    snapshotIntervalMs: 250,
+  }
+  const engine = new SimulationEngine(
+    config,
+    () => {},
+    (e) => events.push(e),
+  )
+  await engine.run()
+  return { events }
+}
 
 function userScenarioDesign(): Design {
   const now = '2026-01-01T00:00:00.000Z'

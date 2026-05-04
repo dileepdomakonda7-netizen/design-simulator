@@ -21,10 +21,26 @@ export interface CompileResult {
   nextRequestNumber: number
 }
 
+/**
+ * Clamp chaos end times to the simulation duration. Events scheduled past
+ * the duration are silently truncated:
+ *
+ *   - Spec end past duration → end time clamped to duration. The chaos
+ *     window effectively closes when the simulation ends, which is what
+ *     the user means anyway.
+ *   - Spec start past duration → entire spec is skipped (no events
+ *     emitted).
+ *
+ * Without clamping, end events sit unfired on the priority queue at
+ * sim_end. Behaviorally harmless, but it leaks engine state
+ * (cacheHitRateOverrides etc.) past sim_end and is a footgun for
+ * forensic comparisons of "what was scheduled vs. what fired."
+ */
 export function compileChaosPlan(
   plan: readonly ChaosEventSpec[],
   design: Design,
   traffic: readonly TrafficSource[],
+  durationMs: number,
   startingEventId: EventId,
   startingRequestNumber: number,
 ): CompileResult {
@@ -32,7 +48,12 @@ export function compileChaosPlan(
   let nextEventId = startingEventId
   let nextRequestNumber = startingRequestNumber
 
+  const clampEnd = (atMs: number, dur: number): number =>
+    Math.min(atMs + dur, durationMs)
+
   for (const spec of plan) {
+    if (spec.at_ms >= durationMs) continue // start past duration → skip entirely
+
     switch (spec.kind) {
       case 'node_crash': {
         events.push({
@@ -44,7 +65,7 @@ export function compileChaosPlan(
         })
         events.push({
           id: nextEventId++,
-          at: spec.at_ms + spec.duration_ms,
+          at: clampEnd(spec.at_ms, spec.duration_ms),
           kind: 'node_recover',
           nodeId: spec.node_id,
           payload: {},
@@ -60,7 +81,7 @@ export function compileChaosPlan(
         })
         events.push({
           id: nextEventId++,
-          at: spec.at_ms + spec.duration_ms,
+          at: clampEnd(spec.at_ms, spec.duration_ms),
           kind: 'partition_end',
           payload: { sideA: spec.partition_a, sideB: spec.partition_b },
         })
@@ -76,7 +97,7 @@ export function compileChaosPlan(
         })
         events.push({
           id: nextEventId++,
-          at: spec.at_ms + spec.duration_ms,
+          at: clampEnd(spec.at_ms, spec.duration_ms),
           kind: 'cache_miss_storm_end',
           nodeId: spec.node_id,
           payload: {},
@@ -84,6 +105,8 @@ export function compileChaosPlan(
         break
       }
       case 'traffic_spike': {
+        const endMs = clampEnd(spec.at_ms, spec.duration_ms)
+        const effectiveDurationMs = endMs - spec.at_ms
         events.push({
           id: nextEventId++,
           at: spec.at_ms,
@@ -92,23 +115,21 @@ export function compileChaosPlan(
         })
         events.push({
           id: nextEventId++,
-          at: spec.at_ms + spec.duration_ms,
+          at: endMs,
           kind: 'traffic_spike_end',
           payload: {},
         })
-        // Generate extra arrivals: (multiplier - 1) × baseline_rps × duration_seconds.
-        // Baseline computed as sum of constant-equivalent RPS across all sources
-        // (rough approximation; v1 simplification).
+        // Use the CLAMPED duration so we don't generate arrivals past sim end.
         const extraPerSecond = traffic.reduce(
           (acc, src) => acc + baselineRpsOf(src),
           0,
         )
         const totalExtras = Math.max(
           0,
-          Math.round((spec.multiplier - 1) * extraPerSecond * (spec.duration_ms / 1000)),
+          Math.round((spec.multiplier - 1) * extraPerSecond * (effectiveDurationMs / 1000)),
         )
         if (totalExtras > 0 && traffic.length > 0) {
-          const interval = spec.duration_ms / totalExtras
+          const interval = effectiveDurationMs / totalExtras
           // Round-robin spike arrivals across traffic sources so each entry node
           // gets a fair share.
           for (let i = 0; i < totalExtras; i++) {

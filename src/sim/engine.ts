@@ -176,6 +176,7 @@ export class SimulationEngine {
         this.config.chaos,
         this.config.design,
         this.config.traffic,
+        this.config.durationMs,
         this.nextEventId,
         this.nextRequestNumber,
       )

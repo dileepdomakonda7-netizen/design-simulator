@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   Area,
   AreaChart,
@@ -12,6 +12,7 @@ import {
   Legend,
 } from 'recharts'
 import { useSimStore } from '@/store/simStore'
+import type { SimEvent } from '@/sim/types'
 
 interface ChartPoint {
   t: number
@@ -31,6 +32,8 @@ function formatTime(ms: number): string {
 export function MetricsPanel() {
   const snapshots = useSimStore((s) => s.snapshots)
   const latest = useSimStore((s) => s.latestSnapshot)
+  const events = useSimStore((s) => s.events)
+  const selectEvent = useSimStore((s) => s.selectEvent)
 
   const data = useMemo<ChartPoint[]>(
     () =>
@@ -43,6 +46,25 @@ export function MetricsPanel() {
         errorRate: s.windowMetrics.errorRate * 100,
       })),
     [snapshots],
+  )
+
+  /**
+   * Recharts <LineChart> onClick fires when the user clicks ANY point in the
+   * chart area. The event object exposes `activeLabel` (the x-axis value the
+   * user clicked nearest to). We snap to that virtual time and pick the
+   * "most interesting" event in a window around it: prefer a final
+   * request_response, request_timeout, or request_reject; fall back to the
+   * latest event in the window. The chosen event populates the Inspector.
+   */
+  const onChartClick = useCallback(
+    (e: { activeLabel?: number | string } | null | undefined) => {
+      if (!e?.activeLabel) return
+      const t = typeof e.activeLabel === 'string' ? parseFloat(e.activeLabel) : e.activeLabel
+      if (!Number.isFinite(t)) return
+      const target = pickInterestingEvent(events, t)
+      if (target !== null) selectEvent(target)
+    },
+    [events, selectEvent],
   )
 
   const c = latest?.cumulativeMetrics
@@ -60,7 +82,11 @@ export function MetricsPanel() {
       <div className="flex-1 grid grid-cols-2 grid-rows-2 gap-px bg-neutral-100 min-h-0">
         <ChartCard title="Throughput (rps)">
           <ResponsiveContainer>
-            <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+            <LineChart
+              data={data}
+              margin={{ top: 8, right: 12, bottom: 4, left: 0 }}
+              onClick={onChartClick}
+            >
               <CartesianGrid stroke="#f5f5f5" />
               <XAxis
                 dataKey="t"
@@ -94,7 +120,11 @@ export function MetricsPanel() {
 
         <ChartCard title="Latency (ms)">
           <ResponsiveContainer>
-            <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+            <LineChart
+              data={data}
+              margin={{ top: 8, right: 12, bottom: 4, left: 0 }}
+              onClick={onChartClick}
+            >
               <CartesianGrid stroke="#f5f5f5" />
               <XAxis
                 dataKey="t"
@@ -123,7 +153,11 @@ export function MetricsPanel() {
 
         <ChartCard title="Error rate (%)">
           <ResponsiveContainer>
-            <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+            <AreaChart
+              data={data}
+              margin={{ top: 8, right: 12, bottom: 4, left: 0 }}
+              onClick={onChartClick}
+            >
               <CartesianGrid stroke="#f5f5f5" />
               <XAxis
                 dataKey="t"
@@ -175,6 +209,44 @@ function ChartCard({ title, children }: { title: string; children: React.ReactNo
       <div className="flex-1 min-h-0">{children}</div>
     </div>
   )
+}
+
+/**
+ * Given a click on the chart at virtual time `targetT`, find the most
+ * interesting event in a small window around it. Priority order:
+ *   1) The latest request_response, request_timeout, or request_reject
+ *      whose `at` is ≤ targetT and within `WINDOW_MS` of it. These are the
+ *      events the user is most likely investigating ("why did this spike?").
+ *   2) Otherwise, the latest event in the window with any kind.
+ *   3) Otherwise, null (don't change selection).
+ */
+const WINDOW_MS = 250
+
+function pickInterestingEvent(
+  events: readonly SimEvent[],
+  targetT: number,
+): number | null {
+  const lo = targetT - WINDOW_MS
+  const hi = targetT + WINDOW_MS / 2
+  let bestInteresting: SimEvent | undefined
+  let bestAny: SimEvent | undefined
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (e.at < lo) break // events are appended in increasing `at`; stop early
+    if (e.at > hi) continue
+    if (
+      !bestInteresting &&
+      (e.kind === 'request_response' ||
+        e.kind === 'request_timeout' ||
+        e.kind === 'request_reject')
+    ) {
+      bestInteresting = e
+    }
+    if (!bestAny) bestAny = e
+    if (bestInteresting) break
+  }
+  const picked = bestInteresting ?? bestAny
+  return picked ? picked.id : null
 }
 
 function Stat({ label, value, color }: { label: string; value: number; color?: string }) {

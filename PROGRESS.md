@@ -70,8 +70,31 @@
 4. `prompt-4c-sim-store` — useSimStore with stream state and caps
 5. `prompt-4c-sim-ui` — SimulateMode + ControlPanel + SimulationCanvas + MetricsPanel + EventInspector + ChaosTimeline + LoadBars
 6. `prompt-4c-app-integration` — SimulateMode default; `?debug=sim` escape hatch
+7. `fix-4c-determinism-and-chart-click` — see "Follow-up" below
 
 (The prompt's per-component commit chunking was collapsed at the UI step because the components are tightly coupled — every panel imports from `useSimStore` and a single broken store breaks the whole layout. Each panel is still cleanly separable in its own file.)
+
+### Follow-up — chaos clamping, chart-click inspector wiring, timeline math
+
+**Reported issues**:
+
+1. With a `cache_miss_storm` whose `at_ms + duration_ms` exceeded the simulation duration, two seed=42 runs reportedly produced different digests in the browser despite identical metric counts.
+2. Clicking the latency chart did not populate the Inspector.
+3. The chaos timeline drew markers at visually-wrong positions.
+
+**Investigation**:
+
+Wrote a regression test (`src/sim/__tests__/determinism.test.ts`) that reproduces the user's exact scenario in Node: `cache_miss_storm` at `at_ms=2000, duration_ms=3500` against `client → cache → DB` at duration=5000. Three sequential seed=42 runs produce identical event arrays AND identical digests in Node. The engine itself is deterministic; the reported browser issue most likely stemmed from a stale worker bundle. Fixes were applied anyway because each is an independent correctness improvement.
+
+**Fixes applied**:
+
+1. **Chaos end-time clamping** (`src/sim/chaos.ts`): `compileChaosPlan` now takes `durationMs` and clamps every chaos end event to `min(at_ms + duration_ms, durationMs)`. Specs whose start is past `durationMs` are skipped entirely. Without clamping, the unfired end event sits on the queue at sim_end and leaves engine state (e.g. `cacheHitRateOverrides`) populated past the run's last fired event — a footgun for forensic comparisons. For `traffic_spike`, the clamped duration caps the count of pre-generated extra arrivals so no events are seeded past sim end.
+
+2. **Chart click → Inspector** (`src/sim-ui/MetricsPanel.tsx`): the throughput, latency, and error-rate charts pass an `onClick` handler to Recharts. The handler reads `activeLabel` (the x-axis virtual time the user clicked nearest), then `pickInterestingEvent(events, t)` walks the event log backwards from the most recent event whose `at` falls in `[t-250ms, t+125ms)` and prefers a `request_response` / `request_timeout` / `request_reject` over any other kind. The picked event id is selected in the Inspector, which auto-renders its causal chain.
+
+3. **Chaos timeline marker math** (`src/sim-ui/ChaosTimeline.tsx`): the timeline now uses an SVG `viewBox="0 0 durationMs 100"` with `preserveAspectRatio="none"`. Each marker draws at exactly its `at_ms` x-coordinate in viewBox space; horizontal stretch is handled by the browser. `vector-effect="non-scaling-stroke"` keeps lines from thinning under stretch. Tick labels moved out of the SVG (where they'd stretch with the viewBox) into a separate DOM row of percentage-positioned divs so labels stay legible. The previous pixel-based math depended on `clientWidth` measurements that fired after first render, causing a brief mis-render on mount.
+
+**Regression test result**: 8/8 tests pass, including the new `chaos plan with end-time past duration: 3 runs at seed=42 are identical` case.
 
 ---
 

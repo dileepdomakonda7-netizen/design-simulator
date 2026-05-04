@@ -187,9 +187,14 @@ function Quick({
 }
 
 // ─── Timeline SVG ─────────────────────────────────────────────────────────────
+//
+// Uses an SVG viewBox so the math is decoupled from pixel width: 1 unit per
+// virtual ms, total width = durationMs. Markers render at exactly their
+// `at_ms` position regardless of how the SVG is scaled into the page.
+// CSS `preserveAspectRatio="none"` stretches horizontally only, leaving
+// height fixed.
 
-const TIMELINE_HEIGHT = 60
-const SAFE_PAD = 8
+const TIMELINE_PX_HEIGHT = 60
 
 function Timeline({
   plan,
@@ -202,87 +207,94 @@ function Timeline({
   selectedId: string | null
   onSelect: (id: string | null) => void
 }) {
-  const [width, setWidth] = useState(280)
-  const xOf = (atMs: number) =>
-    SAFE_PAD + (atMs / Math.max(1, durationMs)) * (width - SAFE_PAD * 2)
+  // viewBox y range is fixed at 100; the px height is set in CSS.
+  const VB_H = 100
+  const VB_W = Math.max(1, durationMs)
+  const ticks = [0, 0.25, 0.5, 0.75, 1] as const
+
   return (
-    <div
-      ref={(el) => {
-        if (el) setWidth(Math.max(80, el.clientWidth))
-      }}
-      className="w-full"
+    <div className="w-full">
+      <svg
+      viewBox={`0 0 ${VB_W} ${VB_H}`}
+      preserveAspectRatio="none"
+      className="block w-full"
+      style={{ height: TIMELINE_PX_HEIGHT }}
     >
-      <svg width={width} height={TIMELINE_HEIGHT} className="block">
-        {/* Axis */}
-        <line
-          x1={SAFE_PAD}
-          x2={width - SAFE_PAD}
-          y1={TIMELINE_HEIGHT / 2}
-          y2={TIMELINE_HEIGHT / 2}
-          stroke="#a3a3a3"
-          strokeWidth={1}
-        />
-        {/* Tick marks */}
-        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
-          <g key={f}>
+      {/* Axis line */}
+      <line
+        x1={0}
+        x2={VB_W}
+        y1={VB_H / 2}
+        y2={VB_H / 2}
+        stroke="#a3a3a3"
+        // vector-effect prevents horizontal stretching from thinning the
+        // stroke (the SVG is x-scaled but y-fixed).
+        vectorEffect="non-scaling-stroke"
+        strokeWidth={1}
+      />
+      {/* Tick marks */}
+      {ticks.map((f) => (
+        <g key={f}>
+          <line
+            x1={f * VB_W}
+            x2={f * VB_W}
+            y1={VB_H / 2 - 6}
+            y2={VB_H / 2 + 6}
+            stroke="#a3a3a3"
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+          />
+        </g>
+      ))}
+      {/* Markers (drawn AT exact ms positions) */}
+      {plan.map((p) => {
+        const sx = Math.max(0, Math.min(VB_W, p.at_ms))
+        const ex = Math.max(0, Math.min(VB_W, p.at_ms + p.duration_ms))
+        const sel = p.id === selectedId
+        const color = colorForKind(p.kind)
+        return (
+          <g
+            key={p.id}
+            onClick={() => onSelect(sel ? null : p.id)}
+            style={{ cursor: 'pointer' }}
+          >
             <line
-              x1={SAFE_PAD + f * (width - SAFE_PAD * 2)}
-              x2={SAFE_PAD + f * (width - SAFE_PAD * 2)}
-              y1={TIMELINE_HEIGHT / 2 - 3}
-              y2={TIMELINE_HEIGHT / 2 + 3}
-              stroke="#a3a3a3"
-              strokeWidth={1}
+              x1={sx}
+              x2={ex}
+              y1={VB_H / 2}
+              y2={VB_H / 2}
+              stroke={color}
+              strokeWidth={sel ? 6 : 4}
+              opacity={sel ? 1 : 0.7}
+              vectorEffect="non-scaling-stroke"
             />
-            <text
-              x={SAFE_PAD + f * (width - SAFE_PAD * 2)}
-              y={TIMELINE_HEIGHT / 2 + 14}
-              fill="#a3a3a3"
-              fontSize={8}
-              textAnchor="middle"
-            >
-              {Math.round(f * durationMs)}
-            </text>
+            <circle cx={sx} cy={VB_H / 2} r={sel ? 7 : 5} fill={color} vectorEffect="non-scaling-stroke" />
+            <circle
+              cx={ex}
+              cy={VB_H / 2}
+              r={sel ? 7 : 5}
+              fill={color}
+              opacity={0.6}
+              vectorEffect="non-scaling-stroke"
+            />
           </g>
+        )
+      })}
+    </svg>
+      {/* Tick labels: plain DOM percentages so viewBox stretching doesn't
+          distort the text. Each label is positioned at its f-fraction of
+          the container width; centered with translate(-50%). */}
+      <div className="relative w-full h-3 mt-0.5">
+        {ticks.map((f) => (
+          <div
+            key={f}
+            className="absolute text-[8px] text-neutral-400 font-mono"
+            style={{ left: `${f * 100}%`, transform: 'translateX(-50%)' }}
+          >
+            {Math.round(f * durationMs)}
+          </div>
         ))}
-        {/* Markers */}
-        {plan.map((p) => {
-          const sx = xOf(p.at_ms)
-          const ex = xOf(p.at_ms + p.duration_ms)
-          const sel = p.id === selectedId
-          const color = colorForKind(p.kind)
-          return (
-            <g
-              key={p.id}
-              onClick={() => onSelect(sel ? null : p.id)}
-              style={{ cursor: 'pointer' }}
-            >
-              {/* Span */}
-              <line
-                x1={sx}
-                x2={ex}
-                y1={TIMELINE_HEIGHT / 2}
-                y2={TIMELINE_HEIGHT / 2}
-                stroke={color}
-                strokeWidth={sel ? 4 : 2.5}
-                opacity={sel ? 1 : 0.7}
-              />
-              <circle
-                cx={sx}
-                cy={TIMELINE_HEIGHT / 2}
-                r={sel ? 5 : 3.5}
-                fill={color}
-              />
-              <circle
-                cx={ex}
-                cy={TIMELINE_HEIGHT / 2}
-                r={sel ? 5 : 3.5}
-                fill={color}
-                opacity={0.6}
-              />
-            </g>
-          )
-        })}
-      </svg>
+      </div>
     </div>
   )
 }
