@@ -2,6 +2,13 @@ import type { Node } from '@/schema/types'
 import { useDesignStore } from '@/store/designStore'
 import { NumberField } from '../fields/NumberField'
 import { SliderField } from '../fields/SliderField'
+import { SelectField } from '../fields/SelectField'
+
+const REJECTION_POLICIES = [
+  { value: 'reject_newest', label: 'Reject newest (default)' },
+  { value: 'reject_oldest', label: 'Reject oldest (displace)' },
+  { value: 'block', label: 'Block (50ms backoff × 5)' },
+] as const
 
 interface Props {
   node: Extract<Node, { type: 'app_server' }>
@@ -47,6 +54,25 @@ export function AppServerParamsForm({ node }: Props) {
         value={node.params.failure_rate}
         onChange={(v) => update(node.id, 'app_server', { failure_rate: v })}
         asPercent
+      />
+      {/* Phase 6a backpressure. Both fields are optional — leaving queue depth
+          blank keeps Phase 4 unbounded behavior. */}
+      <NumberField
+        label="Queue max depth"
+        value={node.params.queue_max_depth ?? 0}
+        onChange={(v) =>
+          update(node.id, 'app_server', { queue_max_depth: Math.max(0, Math.round(v)) })
+        }
+        min={0}
+        step={1}
+        hint="0 = unbounded (Phase 4 default)"
+      />
+      <SelectField
+        label="Rejection policy"
+        value={node.params.rejection_policy ?? 'reject_newest'}
+        options={REJECTION_POLICIES}
+        onChange={(v) => update(node.id, 'app_server', { rejection_policy: v })}
+        disabled={!node.params.queue_max_depth || node.params.queue_max_depth <= 0}
       />
     </div>
   )

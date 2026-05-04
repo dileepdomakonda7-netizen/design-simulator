@@ -23,15 +23,28 @@ export function LoadBars() {
 
   return (
     <Panel position="top-left" className="!m-0 !inset-0 pointer-events-none">
+      {/* Pulse keyframes for the saturated-and-rejecting state. Local to the
+          overlay so it's scoped and doesn't leak into Build mode. */}
+      <style>
+        {`@keyframes lb-pulse { 0% { opacity: 1; } 100% { opacity: 0.55; } }
+          .lb-pulse { animation: lb-pulse 0.5s ease-in-out infinite alternate; }`}
+      </style>
       <svg className="absolute inset-0 w-full h-full pointer-events-none overflow-visible">
         <g transform={`translate(${tx} ${ty}) scale(${tz})`}>
           {nodes.map((node) => {
             const ns = snapshot.nodes[node.id]
             if (!ns) return null
             const util = utilizationOf(node, ns.queueDepth, ns.inFlight)
-            const x = node.position.x + 90 - BAR_WIDTH / 2 // node body is ~180 wide; center bar
-            const y = node.position.y + 80 + 4 // just below the node body
+            const x = node.position.x + 90 - BAR_WIDTH / 2
+            const y = node.position.y + 80 + 4
             const fillWidth = Math.min(1, util) * BAR_WIDTH
+
+            // Phase 6a: pulse when bounded and rejecting (queue at cap).
+            const queueMax = ns.queueMaxDepth
+            const rejecting =
+              queueMax !== undefined && ns.queueDepth >= queueMax && ns.rejectionsInWindow > 0
+            const fillColor = rejecting ? '#b91c1c' : colorFor(util)
+
             return (
               <g key={node.id}>
                 <rect
@@ -49,9 +62,23 @@ export function LoadBars() {
                   y={y}
                   width={fillWidth}
                   height={BAR_HEIGHT}
-                  fill={colorFor(util)}
+                  fill={fillColor}
                   rx={1}
+                  className={rejecting ? 'lb-pulse' : ''}
                 />
+                {/* Depth indicator for bounded queues, e.g. "12/15" */}
+                {queueMax !== undefined && (
+                  <text
+                    x={x + BAR_WIDTH / 2}
+                    y={y + BAR_HEIGHT + 8}
+                    fill={rejecting ? '#b91c1c' : '#737373'}
+                    fontSize={7}
+                    textAnchor="middle"
+                    fontFamily="monospace"
+                  >
+                    {ns.queueDepth}/{queueMax}
+                  </text>
+                )}
               </g>
             )
           })}

@@ -1,8 +1,8 @@
 import { useCallback, useMemo } from 'react'
 import {
   Area,
-  AreaChart,
   CartesianGrid,
+  ComposedChart,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -21,6 +21,8 @@ interface ChartPoint {
   p95: number
   p99: number
   errorRate: number
+  /** Phase 6a: total rejections-per-second across all nodes in the window. */
+  rejectionRps: number
 }
 
 function formatTime(ms: number): string {
@@ -37,14 +39,22 @@ export function MetricsPanel() {
 
   const data = useMemo<ChartPoint[]>(
     () =>
-      snapshots.map((s) => ({
-        t: s.at,
-        throughput: s.windowMetrics.throughputRps,
-        p50: s.windowMetrics.latencyMsP50,
-        p95: s.windowMetrics.latencyMsP95,
-        p99: s.windowMetrics.latencyMsP99,
-        errorRate: s.windowMetrics.errorRate * 100,
-      })),
+      snapshots.map((s) => {
+        // Phase 6a: aggregate rejectionsInWindow across all nodes, convert to
+        // rejections per second over the window.
+        let totalRejections = 0
+        for (const ns of Object.values(s.nodes)) totalRejections += ns.rejectionsInWindow
+        const rejectionRps = totalRejections / (s.windowMetrics.windowMs / 1000)
+        return {
+          t: s.at,
+          throughput: s.windowMetrics.throughputRps,
+          p50: s.windowMetrics.latencyMsP50,
+          p95: s.windowMetrics.latencyMsP95,
+          p99: s.windowMetrics.latencyMsP99,
+          errorRate: s.windowMetrics.errorRate * 100,
+          rejectionRps,
+        }
+      }),
     [snapshots],
   )
 
@@ -151,9 +161,9 @@ export function MetricsPanel() {
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Error rate (%)">
+        <ChartCard title="Error rate % · rejections/s">
           <ResponsiveContainer>
-            <AreaChart
+            <ComposedChart
               data={data}
               margin={{ top: 8, right: 12, bottom: 4, left: 0 }}
               onClick={onChartClick}
@@ -167,25 +177,53 @@ export function MetricsPanel() {
                 tick={{ fontSize: 10 }}
               />
               <YAxis
+                yAxisId="err"
                 stroke="#a3a3a3"
                 fontSize={10}
                 tick={{ fontSize: 10 }}
                 domain={[0, 100]}
                 width={32}
               />
+              <YAxis
+                yAxisId="rej"
+                orientation="right"
+                stroke="#a3a3a3"
+                fontSize={10}
+                tick={{ fontSize: 10 }}
+                width={28}
+              />
               <Tooltip
                 labelFormatter={(t) => formatTime(t as number)}
-                formatter={(v: number) => `${v.toFixed(1)}%`}
+                formatter={(v: number, name) =>
+                  name === 'errorRate' ? `${v.toFixed(1)}%` : `${v.toFixed(1)}/s`
+                }
               />
+              <Legend wrapperStyle={{ fontSize: 10 }} iconSize={8} />
               <Area
+                yAxisId="err"
                 type="monotone"
                 dataKey="errorRate"
+                name="error %"
                 stroke="#dc2626"
                 fill="#fecaca"
                 strokeWidth={1.4}
                 isAnimationActive={false}
               />
-            </AreaChart>
+              {/* Phase 6a: stacked rejection-rate line, dashed, on its own
+                  right-hand axis so it doesn't fight the 0-100% error-rate
+                  scale. Visually distinct without taking over the chart. */}
+              <Line
+                yAxisId="rej"
+                type="monotone"
+                dataKey="rejectionRps"
+                name="reject/s"
+                stroke="#7c2d12"
+                strokeWidth={1.4}
+                strokeDasharray="3 3"
+                dot={false}
+                isAnimationActive={false}
+              />
+            </ComposedChart>
           </ResponsiveContainer>
         </ChartCard>
 

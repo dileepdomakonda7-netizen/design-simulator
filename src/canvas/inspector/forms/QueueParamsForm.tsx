@@ -14,6 +14,11 @@ const GUARANTEES = [
   { value: 'exactly_once', label: 'Exactly once' },
 ] as const
 
+const QUEUE_REJECTION_POLICIES = [
+  { value: 'reject_newest', label: 'Reject newest (default)' },
+  { value: 'reject_oldest', label: 'Reject oldest (silent loss)' },
+] as const
+
 export function QueueParamsForm({ node }: Props) {
   const update = useDesignStore((s) => s.updateNodeParams)
   return (
@@ -51,6 +56,13 @@ export function QueueParamsForm({ node }: Props) {
         value={node.params.failure_rate}
         onChange={(v) => update(node.id, 'queue', { failure_rate: v })}
         asPercent
+      />
+      <SelectField
+        label="Rejection policy"
+        value={node.params.rejection_policy ?? 'reject_newest'}
+        options={QUEUE_REJECTION_POLICIES}
+        onChange={(v) => update(node.id, 'queue', { rejection_policy: v })}
+        disabled={node.params.max_depth <= 0}
       />
     </div>
   )

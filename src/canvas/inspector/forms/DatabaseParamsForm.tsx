@@ -108,6 +108,16 @@ export function DatabaseParamsForm({ node }: Props) {
         onChange={(v) => update(node.id, 'database', { failure_rate: v })}
         asPercent
       />
+      <NumberField
+        label="Read queue max depth"
+        value={node.params.read_queue_max_depth ?? 0}
+        onChange={(v) =>
+          update(node.id, 'database', { read_queue_max_depth: Math.max(0, Math.round(v)) })
+        }
+        min={0}
+        step={1}
+        hint="0 = unbounded — over-cap arrivals reject immediately (Phase 4 default)"
+      />
     </div>
   )
 }

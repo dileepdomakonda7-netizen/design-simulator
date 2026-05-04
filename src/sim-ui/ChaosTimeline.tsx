@@ -107,6 +107,24 @@ export function ChaosTimeline() {
           }}
           disabled={!design.nodes.some((n) => n.type === 'cache')}
         />
+        <Quick
+          label="🔥 Saturate node"
+          onClick={() => {
+            const target =
+              design.nodes.find((n) => n.type === 'app_server') ??
+              design.nodes.find((n) => n.type === 'database') ??
+              design.nodes[0]
+            if (!target) return
+            add({
+              id: nanoid(),
+              kind: 'saturate_node',
+              node_id: target.id,
+              at_ms: Math.round(durationMs / 2),
+              duration_ms: 1500,
+            })
+          }}
+          disabled={design.nodes.length === 0}
+        />
         <Quick label="◐ Node degraded" onClick={() => {}} disabled tooltip="Phase 6" />
       </div>
 
@@ -309,6 +327,8 @@ function colorForKind(kind: ChaosEventSpec['kind']): string {
       return '#f97316'
     case 'cache_miss_storm':
       return '#06b6d4'
+    case 'saturate_node':
+      return '#a855f7'
   }
 }
 
@@ -355,7 +375,9 @@ function ChaosRow({
             value={spec.duration_ms}
             onChange={(v) => onChange({ duration_ms: v })}
           />
-          {(spec.kind === 'node_crash' || spec.kind === 'cache_miss_storm') && (
+          {(spec.kind === 'node_crash' ||
+            spec.kind === 'cache_miss_storm' ||
+            spec.kind === 'saturate_node') && (
             <SelectPair
               label={spec.kind === 'cache_miss_storm' ? 'cache' : 'node'}
               value={spec.node_id}
@@ -405,6 +427,8 @@ function describeSpec(spec: ChaosEventSpec, nodes: Node[]): string {
       return `Spike ${spec.multiplier}× traffic`
     case 'cache_miss_storm':
       return `Miss-storm ${labelOf(spec.node_id)}`
+    case 'saturate_node':
+      return `Saturate ${labelOf(spec.node_id)}`
   }
 }
 
