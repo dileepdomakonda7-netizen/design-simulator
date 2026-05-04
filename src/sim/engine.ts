@@ -10,6 +10,7 @@ import { EventQueue } from './priorityQueue'
 import { VirtualClock } from './virtualClock'
 import { EventLog } from './eventLog'
 import { generateTraffic } from './trafficGenerator'
+import { compileChaosPlan } from './chaos'
 import { getBehavior } from './behaviorRegistry'
 import { subStream } from './prng'
 import type { BehaviorContext, NewEvent } from './behaviors/types'
@@ -65,14 +66,27 @@ export class SimulationEngine {
   private nextSnapshotAt = 0
   private cancelled = false
 
-  // Tracks request_response events that arrived at the originator (i.e. the
-  // FINAL response on the reverse path). With Choice B reverse-path semantics,
-  // a single request emits N response events as it walks back through hops;
-  // only the last one represents a completed request. Cumulative + window
-  // metrics filter against this set to avoid double-counting.
   private finalResponseIds = new Set<EventId>()
-  private cumCompleted = 0 // running count of finalized successes
-  private cumFailedRequests = 0 // running count of finalized failures
+  private cumCompleted = 0
+  private cumFailedRequests = 0
+
+  // ─── Chaos state (4c) ─────────────────────────────────────────────────────
+  // Mutated only by node_failure / node_recover / partition_start /
+  // partition_end / cache_miss_storm_start / _end events. Read by the engine
+  // when scheduling events from behaviors and exposed read-only to behaviors
+  // via BehaviorContext getters.
+  private failedNodes = new Set<string>()
+  private partitions: Array<{ a: Set<string>; b: Set<string> }> = []
+  private cacheHitRateOverrides = new Map<string, number>()
+
+  // ─── Pause / speed (4c) ───────────────────────────────────────────────────
+  private paused = false
+  // Speed: > 1 means yield less often (faster engine→UI delivery), < 1 means
+  // throttle delivery. Determinism is preserved because virtual time and
+  // event scheduling are independent of speed — only the wall-clock pace
+  // changes.
+  private yieldEvery = 1000
+  private yieldDelayMs = 0
 
   constructor(
     private readonly config: SimRunConfig,
@@ -85,6 +99,44 @@ export class SimulationEngine {
 
   cancel(): void {
     this.cancelled = true
+  }
+
+  pause(): void {
+    this.paused = true
+  }
+
+  resume(): void {
+    this.paused = false
+  }
+
+  /**
+   * Throttles event delivery to the main thread — does NOT slow virtual time.
+   * Determinism: same seed always produces the same event log regardless of
+   * speed. Only the wall-clock pace at which events stream out differs.
+   */
+  setSpeed(multiplier: number): void {
+    if (multiplier >= 10) {
+      this.yieldEvery = 10000
+      this.yieldDelayMs = 0
+    } else if (multiplier >= 5) {
+      this.yieldEvery = 5000
+      this.yieldDelayMs = 0
+    } else if (multiplier >= 2) {
+      this.yieldEvery = 2000
+      this.yieldDelayMs = 0
+    } else if (multiplier >= 1) {
+      this.yieldEvery = 1000
+      this.yieldDelayMs = 0
+    } else if (multiplier >= 0.5) {
+      this.yieldEvery = 50
+      this.yieldDelayMs = 20
+    } else if (multiplier >= 0.25) {
+      this.yieldEvery = 25
+      this.yieldDelayMs = 50
+    } else {
+      this.yieldEvery = 10
+      this.yieldDelayMs = 100
+    }
   }
 
   async run(): Promise<void> {
@@ -120,7 +172,30 @@ export class SimulationEngine {
     }
 
     if (this.config.chaos.length > 0) {
-      // Reserved for Phase 4c.
+      const chaos = compileChaosPlan(
+        this.config.chaos,
+        this.config.design,
+        this.config.traffic,
+        this.nextEventId,
+        this.nextRequestNumber,
+      )
+      this.nextEventId = chaos.nextEventId
+      this.nextRequestNumber = chaos.nextRequestNumber
+      for (const ev of chaos.events) {
+        this.queue.push(ev)
+        // Spike-generated arrivals also need their SimRequest record.
+        if (ev.kind === 'request_arrival' && ev.requestId && ev.nodeId) {
+          this.requests.set(ev.requestId, {
+            id: ev.requestId,
+            arrivedAt: ev.at,
+            originNodeId: ev.nodeId,
+            path: [ev.nodeId],
+            attempt: 0,
+            sessionId: ev.requestId,
+            causalContext: {},
+          })
+        }
+      }
     }
 
     this.scheduleEvent({
@@ -131,6 +206,12 @@ export class SimulationEngine {
 
     let processedSinceYield = 0
     while (!this.cancelled) {
+      // Pause: busy-wait at 20Hz. Pauses are user-initiated, not high-throughput.
+      while (this.paused && !this.cancelled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 50))
+      }
+      if (this.cancelled) break
+
       const next = this.queue.peek()
       if (!next) break
       if (next.at > this.config.durationMs) break
@@ -153,8 +234,10 @@ export class SimulationEngine {
       if (ev.kind === 'simulation_end') break
 
       processedSinceYield++
-      if (processedSinceYield >= 1000) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      if (processedSinceYield >= this.yieldEvery) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, this.yieldDelayMs),
+        )
         processedSinceYield = 0
       }
     }
@@ -166,6 +249,49 @@ export class SimulationEngine {
 
   private processEvent(ev: SimEvent): void {
     if (ev.kind === 'simulation_start' || ev.kind === 'simulation_end') return
+
+    // ─── Chaos events: mutate engine state. No behavior dispatch. ────────
+    if (ev.kind === 'node_failure' && ev.nodeId) {
+      this.failedNodes.add(ev.nodeId)
+      return
+    }
+    if (ev.kind === 'node_recover' && ev.nodeId) {
+      this.failedNodes.delete(ev.nodeId)
+      return
+    }
+    if (ev.kind === 'partition_start') {
+      const p = ev.payload as { sideA?: string[]; sideB?: string[] } | undefined
+      if (p?.sideA && p?.sideB) {
+        this.partitions.push({ a: new Set(p.sideA), b: new Set(p.sideB) })
+      }
+      return
+    }
+    if (ev.kind === 'partition_end') {
+      // Match by side membership; first match removed.
+      const p = ev.payload as { sideA?: string[]; sideB?: string[] } | undefined
+      if (p?.sideA && p?.sideB) {
+        const a = new Set(p.sideA)
+        const b = new Set(p.sideB)
+        const idx = this.partitions.findIndex(
+          (part) => setsEqual(part.a, a) && setsEqual(part.b, b),
+        )
+        if (idx >= 0) this.partitions.splice(idx, 1)
+      }
+      return
+    }
+    if (ev.kind === 'cache_miss_storm_start' && ev.nodeId) {
+      this.cacheHitRateOverrides.set(ev.nodeId, 0)
+      return
+    }
+    if (ev.kind === 'cache_miss_storm_end' && ev.nodeId) {
+      this.cacheHitRateOverrides.delete(ev.nodeId)
+      return
+    }
+    if (ev.kind === 'traffic_spike_start' || ev.kind === 'traffic_spike_end') {
+      // Markers for the event log; the extra arrivals were pre-generated.
+      return
+    }
+
     if (!ev.nodeId) return
 
     // (a) Auto-create SimRequest on a request_send with a previously-unseen
@@ -200,7 +326,28 @@ export class SimulationEngine {
     // (c) In-flight bookkeeping (BEFORE behavior so it sees current values).
     this.updateInFlight(ev)
 
-    // (d) Look up the node and its behavior.
+    // (d) If this is a request_receive at a currently-failed node (chaos),
+    //     short-circuit: emit a request_reject and skip behavior dispatch.
+    //     The downstream behavior never sees the request.
+    if (
+      ev.kind === 'request_receive' &&
+      ev.nodeId &&
+      this.failedNodes.has(ev.nodeId) &&
+      ev.requestId
+    ) {
+      this.scheduleEvent({
+        at: this.clock.now(),
+        kind: 'request_reject',
+        nodeId: ev.nodeId,
+        requestId: ev.requestId,
+        causeEventId: ev.id,
+        payload: { reason: 'failed' },
+      })
+      this.maybeFinalize(ev, request)
+      return
+    }
+
+    // (e) Look up the node and its behavior.
     const node = this.config.design.nodes.find((n) => n.id === ev.nodeId)
     if (!node) {
       this.maybeFinalize(ev, request)
@@ -226,11 +373,32 @@ export class SimulationEngine {
         triggeringEvent: ev,
         nodeState: state,
         inFlightByNodeId: this.inFlightByNodeId,
+        isNodeDown: (id) => this.failedNodes.has(id),
+        isPartitioned: (from, to) => this.isPartitioned(from, to),
+        getCacheHitRateOverride: (id) => this.cacheHitRateOverrides.get(id),
         ...(request ? { request } : {}),
       }
 
       const newEvents = behavior(ctx)
       for (const ne of newEvents) {
+        // Partition interception happens at scheduling time, not at receive
+        // time — the rejection is visible immediately, not delayed by network
+        // latency. (Per Prompt 4c §10 / SPEC §9.)
+        if (
+          ne.kind === 'request_send' &&
+          ne.nodeId &&
+          this.isPartitionedSend(ne)
+        ) {
+          this.scheduleEvent({
+            at: ne.at,
+            kind: 'request_reject',
+            nodeId: ne.nodeId,
+            ...(ne.requestId ? { requestId: ne.requestId } : {}),
+            causeEventId: ne.causeEventId ?? ev.id,
+            payload: { reason: 'partition' },
+          })
+          continue
+        }
         this.scheduleEvent(this.toSpec(ne, ev.id))
       }
     }
@@ -279,6 +447,27 @@ export class SimulationEngine {
       this.nodeState.set(nodeId, s)
     }
     return s
+  }
+
+  /**
+   * True if `from` and `to` are on opposite sides of any active partition.
+   * Bidirectional: a partition between {a, b} blocks traffic in either direction.
+   */
+  private isPartitioned(from: string, to: string): boolean {
+    for (const p of this.partitions) {
+      if ((p.a.has(from) && p.b.has(to)) || (p.b.has(from) && p.a.has(to))) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /** Specialized check for an outgoing request_send NewEvent. */
+  private isPartitionedSend(ne: NewEvent): boolean {
+    if (ne.kind !== 'request_send' || !ne.nodeId) return false
+    const target = (ne.payload as { toNodeId?: string } | undefined)?.toNodeId
+    if (!target) return false
+    return this.isPartitioned(ne.nodeId, target)
   }
 
   // ─── Scheduling helpers ───────────────────────────────────────────────────
@@ -391,4 +580,10 @@ function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0
   const idx = Math.floor((sorted.length - 1) * p)
   return sorted[idx] ?? 0
+}
+
+function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
+  if (a.size !== b.size) return false
+  for (const v of a) if (!b.has(v)) return false
+  return true
 }

@@ -46,7 +46,9 @@ const onRequestReceive: Behavior = (ctx) => {
     return rejectHere(ctx, 'failed')
   }
 
-  if (ctx.rng() < params.hit_rate) {
+  // Cache-miss-storm chaos can override hit_rate to 0 for a window.
+  const hitRate = ctx.getCacheHitRateOverride(ctx.node.id) ?? params.hit_rate
+  if (ctx.rng() < hitRate) {
     // Hit — respond after read latency.
     const latency = sampleLatency(
       params.read_latency_ms_p50,

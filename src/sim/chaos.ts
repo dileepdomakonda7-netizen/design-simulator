@@ -1,0 +1,153 @@
+import type { ChaosEventSpec, Design, TrafficSource } from '@/schema/types'
+import type { EventId, RequestId, SimEvent } from './types'
+
+/**
+ * Compile the user's ChaosEventSpec list into engine SimEvents.
+ *
+ * - node_crash       → node_failure at at_ms; node_recover at at_ms+duration_ms
+ * - network_partition → partition_start at at_ms; partition_end at at_ms+duration_ms
+ * - cache_miss_storm → cache_miss_storm_start / cache_miss_storm_end (engine-only)
+ * - traffic_spike    → pre-generated extra request_arrival events spaced over the
+ *                      window, plus traffic_spike_start / _end markers for log
+ *                      inspection. Multiplier of 1.0 = no extras; 2.0 = double.
+ *
+ * The engine processes start/end events to mutate its internal state (failed
+ * nodes set, partition list, cache hit-rate override). Behaviors see the effects
+ * through BehaviorContext getters, never by reading raw chaos events.
+ */
+export interface CompileResult {
+  events: SimEvent[]
+  nextEventId: EventId
+  nextRequestNumber: number
+}
+
+export function compileChaosPlan(
+  plan: readonly ChaosEventSpec[],
+  design: Design,
+  traffic: readonly TrafficSource[],
+  startingEventId: EventId,
+  startingRequestNumber: number,
+): CompileResult {
+  const events: SimEvent[] = []
+  let nextEventId = startingEventId
+  let nextRequestNumber = startingRequestNumber
+
+  for (const spec of plan) {
+    switch (spec.kind) {
+      case 'node_crash': {
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms,
+          kind: 'node_failure',
+          nodeId: spec.node_id,
+          payload: { reason: 'chaos' },
+        })
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms + spec.duration_ms,
+          kind: 'node_recover',
+          nodeId: spec.node_id,
+          payload: {},
+        })
+        break
+      }
+      case 'network_partition': {
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms,
+          kind: 'partition_start',
+          payload: { sideA: spec.partition_a, sideB: spec.partition_b },
+        })
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms + spec.duration_ms,
+          kind: 'partition_end',
+          payload: { sideA: spec.partition_a, sideB: spec.partition_b },
+        })
+        break
+      }
+      case 'cache_miss_storm': {
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms,
+          kind: 'cache_miss_storm_start',
+          nodeId: spec.node_id,
+          payload: {},
+        })
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms + spec.duration_ms,
+          kind: 'cache_miss_storm_end',
+          nodeId: spec.node_id,
+          payload: {},
+        })
+        break
+      }
+      case 'traffic_spike': {
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms,
+          kind: 'traffic_spike_start',
+          payload: { multiplier: spec.multiplier },
+        })
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms + spec.duration_ms,
+          kind: 'traffic_spike_end',
+          payload: {},
+        })
+        // Generate extra arrivals: (multiplier - 1) × baseline_rps × duration_seconds.
+        // Baseline computed as sum of constant-equivalent RPS across all sources
+        // (rough approximation; v1 simplification).
+        const extraPerSecond = traffic.reduce(
+          (acc, src) => acc + baselineRpsOf(src),
+          0,
+        )
+        const totalExtras = Math.max(
+          0,
+          Math.round((spec.multiplier - 1) * extraPerSecond * (spec.duration_ms / 1000)),
+        )
+        if (totalExtras > 0 && traffic.length > 0) {
+          const interval = spec.duration_ms / totalExtras
+          // Round-robin spike arrivals across traffic sources so each entry node
+          // gets a fair share.
+          for (let i = 0; i < totalExtras; i++) {
+            const t = spec.at_ms + interval * (i + 0.5)
+            const source = traffic[i % traffic.length]!
+            const requestId: RequestId = `req-${nextRequestNumber++}`
+            events.push({
+              id: nextEventId++,
+              at: t,
+              kind: 'request_arrival',
+              nodeId: source.target_node_id,
+              requestId,
+              payload: { trafficSourceId: source.id, spike: true },
+            })
+          }
+        }
+        break
+      }
+    }
+  }
+
+  return { events, nextEventId, nextRequestNumber }
+}
+
+/** Best-effort baseline RPS from a load shape — used only for traffic-spike sizing. */
+function baselineRpsOf(source: TrafficSource): number {
+  const s = source.load_shape
+  switch (s.kind) {
+    case 'constant':
+      return s.rps
+    case 'ramp':
+      return (s.start_rps + s.end_rps) / 2
+    case 'step':
+      return s.steps.reduce((a, st) => a + st.rps, 0) / Math.max(1, s.steps.length)
+    case 'spike':
+      return s.base_rps
+    case 'sine':
+      return s.base_rps
+    case 'random_burst':
+      return s.base_rps
+  }
+}

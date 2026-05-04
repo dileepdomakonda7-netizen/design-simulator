@@ -1,3 +1,4 @@
+import type { ChaosEventSpec } from '@/schema/types'
 import type { SimEvent, SimRunConfig, SimSnapshot } from './types'
 
 /**
@@ -6,19 +7,17 @@ import type { SimEvent, SimRunConfig, SimSnapshot } from './types'
  * functions across the worker boundary.
  */
 export interface SimulationWorkerApi {
-  /**
-   * Starts a simulation. Returns once `run()` has fully completed (or was
-   * cancelled). Snapshots and events stream back via the proxied callbacks
-   * as the engine produces them; `onComplete` fires once the run terminates.
-   */
   start(
     config: SimRunConfig,
     onSnapshot: (snapshot: SimSnapshot) => void,
     onEvent: (event: SimEvent) => void,
     onComplete: () => void,
   ): Promise<void>
-
-  /** Asks the running engine to stop. The engine drains the current event,
-   *  emits a final snapshot, then `onComplete` fires. */
   cancel(): Promise<void>
+  pause(): Promise<void>
+  resume(): Promise<void>
+  setSpeed(multiplier: number): Promise<void>
+  /** Stub: live chaos injection. Implemented signature in 4c; UI exposure is
+   *  deferred to a later phase. */
+  injectChaos(spec: ChaosEventSpec, atVirtualTimeMs?: number): Promise<void>
 }

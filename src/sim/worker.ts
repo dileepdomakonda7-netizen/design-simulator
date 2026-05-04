@@ -33,6 +33,22 @@ const api: SimulationWorkerApi = {
   async cancel() {
     currentEngine?.cancel()
   },
+
+  async pause() {
+    currentEngine?.pause()
+  },
+
+  async resume() {
+    currentEngine?.resume()
+  },
+
+  async setSpeed(multiplier: number) {
+    currentEngine?.setSpeed(multiplier)
+  },
+
+  async injectChaos() {
+    // 4c stub: signature exists for forward compat; live injection is deferred.
+  },
 }
 
 Comlink.expose(api)

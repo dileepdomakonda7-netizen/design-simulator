@@ -36,6 +36,14 @@ export interface BehaviorContext {
   /** Read-only view of the engine's in-flight count per target node id.
    *  Used by load balancers for `least_connections` routing. */
   inFlightByNodeId: ReadonlyMap<string, number>
+  /** True if the engine considers `nodeId` currently failed (chaos). */
+  isNodeDown: (nodeId: string) => boolean
+  /** True if there is an active partition between two node ids. */
+  isPartitioned: (fromNodeId: string, toNodeId: string) => boolean
+  /** Returns the override hit-rate for a cache node during a cache_miss_storm,
+   *  or undefined if no override is active. Caches use this in preference to
+   *  their static params.hit_rate. */
+  getCacheHitRateOverride: (nodeId: string) => number | undefined
 }
 
 /**

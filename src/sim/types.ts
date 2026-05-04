@@ -32,6 +32,13 @@ export type SimEventKind =
   // consumer_processing_rps. Self-targeted at the queue node; not triggered
   // by request flow.
   | 'queue_consumer_tick'
+  // 4c chaos markers — compiled from ChaosEventSpec and processed by the
+  // engine to mutate internal state (cache override map) or appear in the
+  // log for inspection (traffic spike). Behaviors never see these directly.
+  | 'cache_miss_storm_start'
+  | 'cache_miss_storm_end'
+  | 'traffic_spike_start'
+  | 'traffic_spike_end'
 
 /**
  * A scheduled event. Immutable once enqueued — behaviors create new events,
