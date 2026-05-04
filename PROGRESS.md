@@ -1,5 +1,80 @@
 # Progress
 
+## Phase 4a — Simulation Engine Core (complete)
+
+`npm run dev` → http://localhost:5173 — Simulate mode now shows SimDebugPage
+`npm run typecheck` → 0 errors
+`npm run lint` → 0 errors, 0 warnings
+`npm run build` → main 487 kB JS / 38 kB CSS gzip; **worker bundled separately at 12.5 kB** (no main-thread overhead until you click Run)
+
+### Dependencies added in Prompt 4a
+
+- `comlink@4` — Web Worker RPC
+
+### Acceptance criteria
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | Load `client → app_server`; click Run → events stream | ✅ |
+| 2 | Event counter and virtual time advance; log table populates | ✅ |
+| 3 | Final snapshot shows non-zero throughput and latency | ✅ |
+| 4 | Event order: simulation_start → request_arrival × N → request_receive / complete / response per request → simulation_end | ✅ |
+| 5 | Every non-root event has `causeEventId`; `EventLog.causalChain(id)` returns the full chain root-first | ✅ |
+| 6 | Same seed → identical totals across runs | ✅ — every random source is `subStream(seed, key)`; heap tiebreaks on monotonic `id`; traffic times pre-computed |
+| 7 | Different seeds may diverge; same seed never does | ✅ |
+| 8 | Cancel mid-flight stops the worker within ~100 ms (yield every 1000 events) | ✅ |
+| 9 | UI stays responsive in Build mode while a 60s/100 RPS run executes in the worker | ✅ |
+| 10 | typecheck / lint / build all pass | ✅ |
+
+### Decisions left to discretion in the prompt
+
+**Snapshot scheduling: parallel `nextSnapshotAt` counter, not a synthetic SimEvent kind.** The engine maintains a single `nextSnapshotAt: number` and emits a snapshot whenever the next due time falls before the next event. Rationale: this keeps `SimEventKind` tight — every kind in the union is part of the cause-chain semantics; adding a `snapshot_tick` kind would introduce events that have no `causeEventId` chain meaning and complicate behavior dispatch. Trade-off: snapshots aren't visible in the event log, which is fine because they're a derived view, not durable state.
+
+**Cumulative metrics computed by full-log scan each snapshot.** O(events × snapshots) which is fine for 4a-scale runs (~10k events × ~50 snapshots = 500k ops). Phase 4b/4c can switch to running counters maintained at every event dispatch — the boundary is small (the `cumulativeMetrics` block in `buildSnapshot`).
+
+**`outgoing` / `incoming` filtered each call to `processEvent`.** Linear scan over `design.edges`; fine for v1 designs (≤ 50 edges typical). If profiling shows this hot, precompute `outgoingByNodeId` once at engine init and look up.
+
+**4a fallback: engine forwards `request_arrival` to the next hop directly.** No client behavior is registered; the engine has hardcoded routing logic that schedules `request_receive` on the first outgoing edge of the source node. Localized to one block in `processEvent`; replaced by a real client behavior in 4b.
+
+**Engine lifecycle: `start()` returns only when `run()` finishes (or is cancelled).** Snapshots and events stream back via Comlink-proxied callbacks during the run. `onComplete` fires from a `finally` block so it's guaranteed even if the engine throws.
+
+**Test harness deferred.** A determinism harness that runs the engine in Node would require adding `tsx` or wiring up a separate build. Determinism is verified by code reading (zero `Math.random()` calls anywhere in `src/sim/`; all randomness funneled through `subStream`; heap ties broken on monotonic `id`) and by the in-browser acceptance check (run twice with seed 42, totals match). Real test harness arrives when the cost is justified by failures it would catch.
+
+### Commits in this phase
+
+1. `prompt-4a-deps` — comlink + vite-env.d.ts
+2. `prompt-4a-types` — SimEvent / SimRequest / SimSnapshot
+3. `prompt-4a-prng` — mulberry32 / fnv1a32 / subStream / sampleLogNormal
+4. `prompt-4a-queue-clock-log` — EventQueue / VirtualClock / EventLog
+5. `prompt-4a-traffic` — generateTraffic for all 6 LoadShapes
+6. `prompt-4a-engine` — SimulationEngine + behavior registry + behavior types
+7. `prompt-4a-worker` — Comlink-exposed SimulationWorkerApi
+8. `prompt-4a-debug-page` — SimDebugPage replaces SimulateModePlaceholder
+9. `prompt-4a-echo-behavior` — trivial echo behavior used only by the debug page
+
+### Re-reading the engine main loop (per Prompt §16)
+
+Did so. Each invariant in the comment block at the top of `engine.ts` is upheld
+by the implementation:
+
+1. Queue is the only mutable scheduling state — verified: only `scheduleEvent`
+   pushes; nothing else mutates `this.queue`.
+2. `processEvent` is the only event consumer — verified: only `run()` pops, and
+   immediately calls `processEvent`.
+3. `scheduleEvent` is the only id assigner — verified: traffic generator passes
+   pre-assigned ids in but adopts the engine's counter on return.
+4. `causeEventId` defaults to triggering event id — verified in `toSpec()`.
+5. Clock is monotonic — VirtualClock asserts.
+6. Heap ties broken on id — EventQueue.less() checks at then id.
+7. Yield every 1000 events — verified in main loop.
+8. Snapshots not in event log — verified: `emitSnapshot` calls `onSnapshot`
+   directly, never `log.append`.
+
+The code is short enough to read end-to-end without a debugger. 4b's behaviors
+will land into clearly delineated extension points.
+
+---
+
 ## Phase 3b — Build Mode: Palette + Inspector + Annotation Layer (complete)
 
 `npm run dev` → http://localhost:5173 (build mode is now feature-complete per SPEC §3 / §10)
