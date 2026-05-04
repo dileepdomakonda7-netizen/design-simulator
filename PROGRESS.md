@@ -83,8 +83,26 @@ Did so. Notes:
 1. `prompt-4b-engine-state-and-routing` — engine nodeState/inFlight, routing.ts, latency.ts, type updates
 2. `prompt-4b-shared-helpers` — forward / reverse / timeout / retry primitives
 3. `prompt-4b-eleven-behaviors-and-worker` — all 11 behaviors + worker import update + echo deletion
+4. `fix-4b-completion-metrics-double-count` — see "Bug fix" below
 
 (The Prompt 4b §10 ordering of one commit per behavior was collapsed to a single commit because each per-behavior commit would leave the worker importing a non-existent file or leave the engine without enough behaviors registered to simulate any design — the commits weren't independently functional. The combined commit's message walks through the behaviors in the suggested order.)
+
+### Bug fix — completion metrics double-counted reverse-path hops
+
+**Symptom**: `totalRequestsCompleted` ≈ 2× `totalRequestsArrived` for a `client → cache → database` design. Throughput chart read 20 RPS for a 10 RPS workload. Same shape on any chain with N≥2 hops.
+
+**Root cause**: With Choice B reverse-path semantics (one hop at a time), each request emits **N `request_response` events** as it walks back through the chain. The engine's `buildSnapshot` was counting every `request_response` event in the log as a completion. The earlier heuristic — "filter to where the request was already finalized OR `payload.toNodeId === origin`" — fell apart once the request was deleted from `this.requests` (which happens at the FINAL response): all N reverse-path responses retroactively passed the filter.
+
+**Fix**: the engine now tracks an explicit `finalResponseIds: Set<EventId>` populated in `maybeFinalize` exactly once per request — the moment the response arrives at `request.originNodeId`. Cumulative success/failure counts are running engine counters (`cumCompleted` / `cumFailedRequests`) bumped at the same point. Window metrics (throughput, p50/p95/p99 latency, error rate) all filter against this set; intermediate hops never participate.
+
+Side benefits:
+- `totalRequestsCompleted` and `totalRequestsFailed` are now per-request unique counts. The invariant `arrived ≥ completed + failed` holds at all times.
+- Latency percentiles read the FINAL response's `durationMs` only, which is the full round-trip; intermediate hops' partial durations no longer skew the distribution.
+- `totalRequestsRejected` and `totalRequestsTimedOut` are still event counts (a single request that retries 3× and times out each attempt would contribute 3 to `totalRequestsTimedOut`). Documented as informational in the engine.
+
+**Re-verified after fix** (test cases from prompt):
+- `client → cache → database` with `hit_rate=0.0` at 10 RPS / 5s → arrived ≈ completed ≈ 50, p99 includes DB latency.
+- Same chain with `hit_rate=1.0` → arrived ≈ completed ≈ 50, p99 dramatically lower (cache hit short-circuits the path).
 
 ---
 

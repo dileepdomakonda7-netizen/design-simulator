@@ -65,6 +65,15 @@ export class SimulationEngine {
   private nextSnapshotAt = 0
   private cancelled = false
 
+  // Tracks request_response events that arrived at the originator (i.e. the
+  // FINAL response on the reverse path). With Choice B reverse-path semantics,
+  // a single request emits N response events as it walks back through hops;
+  // only the last one represents a completed request. Cumulative + window
+  // metrics filter against this set to avoid double-counting.
+  private finalResponseIds = new Set<EventId>()
+  private cumCompleted = 0 // running count of finalized successes
+  private cumFailedRequests = 0 // running count of finalized failures
+
   constructor(
     private readonly config: SimRunConfig,
     private readonly onSnapshot: (snapshot: SimSnapshot) => void,
@@ -237,6 +246,12 @@ export class SimulationEngine {
       request &&
       request.originNodeId === ev.nodeId
     ) {
+      // Mark this response as the FINAL one for its request and bump the
+      // appropriate running counter. Window metrics filter against this set.
+      this.finalResponseIds.add(ev.id)
+      const payload = ev.payload as { success?: boolean } | undefined
+      if (payload?.success === false) this.cumFailedRequests++
+      else this.cumCompleted++
       this.requests.delete(request.id)
     }
   }
@@ -295,22 +310,23 @@ export class SimulationEngine {
   private buildSnapshot(at: number): SimSnapshot {
     const windowMs = 1000
     const windowEvents = this.log.range(Math.max(0, at - windowMs), at)
-    const completedInWindow = windowEvents.filter((e) => e.kind === 'request_response')
-    const failedInWindow = windowEvents.filter(
-      (e) => e.kind === 'request_timeout' || e.kind === 'request_reject',
-    )
-    // Only count responses that reached their origin AND were successful.
-    const successfulResponses = completedInWindow.filter((e) => {
-      const p = e.payload as { success?: boolean; toNodeId?: string } | undefined
-      const req = this.requests.get(e.requestId ?? '')
-      // After finalization the request is deleted, so we use the heuristic
-      // p.toNodeId === origin for completed-and-finalized requests.
-      // For window stats, a "completed" request is one whose response payload
-      // says success === true at the originator (toNodeId === origin if known).
-      return p?.success === true && (!req || req.originNodeId === p.toNodeId)
-    })
 
-    const latencies = successfulResponses
+    // Final-only filtering: a single request emits N request_response events
+    // (one per reverse-path hop). The set built in maybeFinalize identifies
+    // which event ids are the FINAL response — i.e. the one that arrived at
+    // the request's originator. Throughput, latency, and error rate are
+    // derived from finals only; otherwise an N-hop reverse path inflates
+    // throughput by N.
+    const finalSuccessInWindow: SimEvent[] = []
+    const finalFailureInWindow: SimEvent[] = []
+    for (const e of windowEvents) {
+      if (e.kind !== 'request_response' || !this.finalResponseIds.has(e.id)) continue
+      const success = (e.payload as { success?: boolean } | undefined)?.success !== false
+      if (success) finalSuccessInWindow.push(e)
+      else finalFailureInWindow.push(e)
+    }
+
+    const latencies = finalSuccessInWindow
       .map((e) => {
         const p = e.payload as { durationMs?: number } | undefined
         return p?.durationMs ?? 0
@@ -319,9 +335,14 @@ export class SimulationEngine {
 
     const allEvents = this.log.toArray()
     const cumArrivals = countByKind(allEvents, 'request_arrival')
-    const cumCompleted = countByKind(allEvents, 'request_response')
+    // Note: totalRequestsRejected / TimedOut count EVENTS (not unique requests)
+    // — informational. totalRequestsCompleted / Failed count finalized requests
+    // (one per request) and are running engine counters, so they always
+    // satisfy `arrived >= completed + failed`.
     const cumTimedOut = countByKind(allEvents, 'request_timeout')
     const cumRejected = countByKind(allEvents, 'request_reject')
+
+    const totalDecided = finalSuccessInWindow.length + finalFailureInWindow.length
 
     return {
       at,
@@ -343,20 +364,16 @@ export class SimulationEngine {
       ),
       windowMetrics: {
         windowMs,
-        throughputRps: successfulResponses.length / (windowMs / 1000),
+        throughputRps: finalSuccessInWindow.length / (windowMs / 1000),
         latencyMsP50: percentile(latencies, 0.5),
         latencyMsP95: percentile(latencies, 0.95),
         latencyMsP99: percentile(latencies, 0.99),
-        errorRate:
-          successfulResponses.length + failedInWindow.length === 0
-            ? 0
-            : failedInWindow.length /
-              (successfulResponses.length + failedInWindow.length),
+        errorRate: totalDecided === 0 ? 0 : finalFailureInWindow.length / totalDecided,
       },
       cumulativeMetrics: {
         totalRequestsArrived: cumArrivals,
-        totalRequestsCompleted: cumCompleted,
-        totalRequestsFailed: cumTimedOut + cumRejected,
+        totalRequestsCompleted: this.cumCompleted,
+        totalRequestsFailed: this.cumFailedRequests,
         totalRequestsRejected: cumRejected,
         totalRequestsTimedOut: cumTimedOut,
       },
