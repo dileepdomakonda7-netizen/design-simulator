@@ -80,6 +80,9 @@ export interface AppServerParams {
   latency_ms_p50: number // processing time distribution (log-normal)
   latency_ms_p99: number
   failure_rate: number
+  // Phase 6a backpressure. Optional: undefined → unbounded (Phase 4 behavior).
+  queue_max_depth?: number
+  rejection_policy?: 'reject_newest' | 'reject_oldest' | 'block'
 }
 
 export interface CacheParams {
@@ -94,7 +97,7 @@ export interface CacheParams {
 export interface DatabaseParams {
   subtype: DatabaseSubtype
   replicas: number // total nodes including primary
-  read_capacity_rps: number // beyond this the node saturates and latency degrades
+  read_capacity_rps: number // concurrent in-flight cap (Phase 4b simplification)
   write_capacity_rps: number
   replication_mode: ReplicationMode
   replication_lag_ms_p50: number // meaningful only when mode = 'async'
@@ -104,14 +107,24 @@ export interface DatabaseParams {
   write_latency_ms_p50: number
   write_latency_ms_p99: number
   failure_rate: number
+  // Phase 6a backpressure. Optional: undefined → unbounded (Phase 4 behavior).
+  read_queue_max_depth?: number
+  write_queue_max_depth?: number // reserved; write-path queue is its own Phase 6 work
+  rejection_policy?: 'reject_newest'
 }
 
 export interface QueueParams {
-  max_depth: number // 0 = unbounded; > 0 = bounded, excess rejected
+  max_depth: number // 0 = unbounded; > 0 = bounded, excess rejected per rejection_policy
   consumer_processing_rps: number
   visibility_timeout_ms: number
   delivery_guarantee: DeliveryGuarantee
   failure_rate: number
+  // Phase 6a: how to drop messages when bounded queue is full.
+  // reject_newest (default): incoming producer message rejected.
+  // reject_oldest: oldest queued message displaced (silent loss; producer
+  //   was already told success: true on enqueue, so we DON'T retract that —
+  //   matches real-world fire-and-forget queues under sustained overload).
+  rejection_policy?: 'reject_newest' | 'reject_oldest'
 }
 
 export interface PubSubParams {
@@ -291,5 +304,17 @@ export type ChaosEventSpec =
       node_id: string // must resolve to a 'cache' node
       at_ms: number
       duration_ms: number // forces hit_rate = 0 for this window
+    }
+  | {
+      // Phase 6a: drive a target node to saturation. The chaos compiler emits
+      // a burst of synthetic request_receive events at the node directly,
+      // bypassing the normal upstream chain. Burst size scales with the
+      // node's capacity. v1 simplification: emits capacity*5 extras over
+      // the window.
+      id: string
+      kind: 'saturate_node'
+      node_id: string
+      at_ms: number
+      duration_ms: number
     }
 // 'node_degraded' is v2

@@ -55,6 +55,8 @@ export const AppServerParamsSchema = z.object({
   latency_ms_p50: z.number().positive(),
   latency_ms_p99: z.number().positive(),
   failure_rate: z.number().min(0).max(1),
+  queue_max_depth: z.number().int().positive().optional(),
+  rejection_policy: z.enum(['reject_newest', 'reject_oldest', 'block']).optional(),
 })
 
 export const CacheParamsSchema = z.object({
@@ -79,6 +81,9 @@ export const DatabaseParamsSchema = z.object({
   write_latency_ms_p50: z.number().positive(),
   write_latency_ms_p99: z.number().positive(),
   failure_rate: z.number().min(0).max(1),
+  read_queue_max_depth: z.number().int().positive().optional(),
+  write_queue_max_depth: z.number().int().positive().optional(),
+  rejection_policy: z.enum(['reject_newest']).optional(),
 })
 
 export const QueueParamsSchema = z.object({
@@ -87,6 +92,7 @@ export const QueueParamsSchema = z.object({
   visibility_timeout_ms: z.number().positive(),
   delivery_guarantee: z.enum(['at_most_once', 'at_least_once', 'exactly_once']),
   failure_rate: z.number().min(0).max(1),
+  rejection_policy: z.enum(['reject_newest', 'reject_oldest']).optional(),
 })
 
 export const PubSubParamsSchema = z.object({
@@ -215,6 +221,13 @@ export const ChaosEventSpecSchema = z.discriminatedUnion('kind', [
   z.object({
     id: z.string().min(1),
     kind: z.literal('cache_miss_storm'),
+    node_id: z.string().min(1),
+    at_ms: z.number().nonnegative(),
+    duration_ms: z.number().positive(),
+  }),
+  z.object({
+    id: z.string().min(1),
+    kind: z.literal('saturate_node'),
     node_id: z.string().min(1),
     at_ms: z.number().nonnegative(),
     duration_ms: z.number().positive(),
