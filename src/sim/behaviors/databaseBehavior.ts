@@ -25,8 +25,8 @@
  */
 import { registerBehavior } from '../behaviorRegistry'
 import { sampleLatency } from '../latency'
-import { forwardResponseUpstream, rejectHere } from './shared'
-import type { Behavior } from './types'
+import { forwardResponseUpstream, rejectAndRespond } from './shared'
+import type { Behavior, NewEvent } from './types'
 import type { Node } from '@/schema/types'
 
 function getParams(node: Node): Extract<Node, { type: 'database' }>['params'] {
@@ -44,18 +44,20 @@ function setInFlightReads(state: Record<string, unknown>, n: number): void {
   state['inFlightReads'] = n
 }
 
-const onRequestReceive: Behavior = (ctx) => {
-  const params = getParams(ctx.node)
-  if (!ctx.request) return []
-
-  // v1: always treat as a read unless causalContext.kind === 'write'.
-  const kind = (ctx.request.causalContext['kind'] as string | undefined) ?? 'read'
-
-  // v1 simplification: read_capacity_rps used as a concurrent-in-flight cap.
-  if (kind === 'read' && getInFlightReads(ctx.nodeState) >= params.read_capacity_rps) {
-    return rejectHere(ctx, 'capacity')
+function getQueue(state: Record<string, unknown>): string[] {
+  let q = state['queue'] as string[] | undefined
+  if (!q) {
+    q = []
+    state['queue'] = q
   }
+  return q
+}
 
+function startProcessing(
+  ctx: Parameters<Behavior>[0],
+  requestId: string,
+): NewEvent[] {
+  const params = getParams(ctx.node)
   setInFlightReads(ctx.nodeState, getInFlightReads(ctx.nodeState) + 1)
   const latency = sampleLatency(
     params.read_latency_ms_p50,
@@ -67,17 +69,69 @@ const onRequestReceive: Behavior = (ctx) => {
       at: ctx.now + latency,
       kind: 'request_complete',
       nodeId: ctx.node.id,
-      requestId: ctx.request.id,
+      requestId,
       payload: { processingTimeMs: latency, success: true },
     },
   ]
 }
 
+/**
+ * Phase 6a: separate the in-flight cap from the queue.
+ *
+ *   1. inFlightReads < read_capacity_rps → process immediately (no queue).
+ *   2. read_queue_max_depth defined and queue.length < that → enqueue.
+ *   3. Otherwise → reject with reason 'capacity' + fast failure response.
+ *
+ * If read_queue_max_depth is undefined, the historical Phase 4 behavior is
+ * preserved: behave like a concurrent cap with no queue past it (over-cap
+ * arrivals reject immediately with 'capacity').
+ */
+const onRequestReceive: Behavior = (ctx) => {
+  const params = getParams(ctx.node)
+  if (!ctx.request) return []
+  // v1: always treat as a read unless causalContext.kind === 'write'.
+  const kind = (ctx.request.causalContext['kind'] as string | undefined) ?? 'read'
+  if (kind !== 'read') {
+    // v1: write path is reserved; treat write as a read for now.
+  }
+
+  if (getInFlightReads(ctx.nodeState) < params.read_capacity_rps) {
+    return startProcessing(ctx, ctx.request.id)
+  }
+
+  const q = getQueue(ctx.nodeState)
+  // 0 sentinel for unbounded (UI cannot write undefined through Partial<>
+  // under exactOptionalPropertyTypes; behavior treats 0 as Phase 4 default).
+  const maxDepth = params.read_queue_max_depth
+  if (maxDepth !== undefined && maxDepth > 0 && q.length < maxDepth) {
+    q.push(ctx.request.id)
+    return [
+      {
+        at: ctx.now,
+        kind: 'request_enqueue',
+        nodeId: ctx.node.id,
+        requestId: ctx.request.id,
+        payload: { queueDepth: q.length },
+      },
+    ]
+  }
+
+  return rejectAndRespond(ctx, 'capacity', { queueDepth: q.length })
+}
+
 const onRequestComplete: Behavior = (ctx) => {
   const params = getParams(ctx.node)
+  // Order matters: decrement, drain, increment. The drain step starts the
+  // next queued request which will increment again. Net inFlightReads stays
+  // at capacity while the queue has work — exactly what we want.
   setInFlightReads(ctx.nodeState, Math.max(0, getInFlightReads(ctx.nodeState) - 1))
   const success = ctx.rng() >= params.failure_rate
-  return forwardResponseUpstream(ctx, success)
+  const out: NewEvent[] = forwardResponseUpstream(ctx, success)
+
+  const q = getQueue(ctx.nodeState)
+  const next = q.shift()
+  if (next !== undefined) out.push(...startProcessing(ctx, next))
+  return out
 }
 
 const onRequestResponse: Behavior = (ctx) => {

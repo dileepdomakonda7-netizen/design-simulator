@@ -89,9 +89,61 @@ const onRequestReceive: Behavior = (ctx) => {
   if (!ctx.request) return []
 
   const depth = getDepth(ctx.nodeState)
+  const policy = params.rejection_policy ?? 'reject_newest'
   if (params.max_depth > 0 && depth >= params.max_depth) {
-    // Queue full — reject; producer gets a failure response.
+    if (policy === 'reject_oldest') {
+      // Phase 6a: silent message loss. Drop the OLDEST queued message,
+      // emit a request_reject for it (visible only in the event log /
+      // metrics), and accept the new one. The producer of the displaced
+      // message was already told success: true on enqueue, so we don't
+      // retract that acknowledgment — this is the realistic
+      // fire-and-forget queue behavior under sustained overload.
+      const out: NewEvent[] = [
+        {
+          at: ctx.now,
+          kind: 'request_reject',
+          nodeId: ctx.node.id,
+          payload: { reason: 'capacity_displaced', atNodeId: ctx.node.id },
+        },
+      ]
+      // depth stays the same: we drop one and accept one.
+      // Producer fire-and-forget response for the new message:
+      const producerHopId = ctx.request.path[ctx.request.path.length - 2]
+      if (producerHopId) {
+        out.push({
+          at: ctx.now,
+          kind: 'request_response',
+          nodeId: producerHopId,
+          requestId: ctx.request.id,
+          payload: {
+            toNodeId: producerHopId,
+            fromNodeId: ctx.node.id,
+            success: true,
+            durationMs: ctx.now - ctx.request.arrivedAt,
+          },
+        })
+      }
+      // Schedule consumer tick if not already pending.
+      if (!getTickScheduled(ctx.nodeState) && ctx.outgoing.length > 0) {
+        setTickScheduled(ctx.nodeState, true)
+        out.push({
+          at: ctx.now + consumerTickInterval(params.consumer_processing_rps),
+          kind: 'queue_consumer_tick',
+          nodeId: ctx.node.id,
+          payload: {},
+        })
+      }
+      return out
+    }
+    // reject_newest (default): incoming producer message rejected.
     return [
+      {
+        at: ctx.now,
+        kind: 'request_reject',
+        nodeId: ctx.node.id,
+        requestId: ctx.request.id,
+        payload: { reason: 'capacity', atNodeId: ctx.node.id },
+      },
       {
         at: ctx.now,
         kind: 'request_response',
