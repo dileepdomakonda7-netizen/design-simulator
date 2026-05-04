@@ -114,6 +114,10 @@ export interface NodeSnapshot {
   inFlight: number
   /** v1 uses 'up' / 'down'; 'degraded' reserved for v2 partial-failure features. */
   state: 'up' | 'degraded' | 'down'
+  /** Phase 6a: per-snapshot backpressure visibility. */
+  queueMaxDepth?: number // undefined = unbounded
+  rejectionsInWindow: number // request_reject events at this node in last windowMs
+  saturated: boolean // queueDepth >= maxDepth-1 OR inFlight >= capacity
 }
 
 export interface WindowMetrics {

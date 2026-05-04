@@ -295,10 +295,14 @@ export class SimulationEngine {
 
     if (!ev.nodeId) return
 
-    // (a) Auto-create SimRequest on a request_send with a previously-unseen
-    //     request id. Used by queue tick → consumer and pub/sub fanout.
+    // (a) Auto-create SimRequest on a request_send OR request_receive with a
+    //     previously-unseen request id. Used by:
+    //       - queue tick → consumer (request_send)
+    //       - pub/sub fanout (request_send)
+    //       - 6a saturate_node chaos (synthetic request_receive directly at
+    //         the target — no upstream path)
     if (
-      ev.kind === 'request_send' &&
+      (ev.kind === 'request_send' || ev.kind === 'request_receive') &&
       ev.requestId &&
       ev.nodeId &&
       !this.requests.has(ev.requestId)
@@ -377,6 +381,7 @@ export class SimulationEngine {
         isNodeDown: (id) => this.failedNodes.has(id),
         isPartitioned: (from, to) => this.isPartitioned(from, to),
         getCacheHitRateOverride: (id) => this.cacheHitRateOverrides.get(id),
+        getRequest: (id) => this.requests.get(id),
         ...(request ? { request } : {}),
       }
 
@@ -534,6 +539,14 @@ export class SimulationEngine {
 
     const totalDecided = finalSuccessInWindow.length + finalFailureInWindow.length
 
+    // Phase 6a: count rejection events per node in the current window.
+    const rejectionsPerNode = new Map<string, number>()
+    for (const e of windowEvents) {
+      if (e.kind === 'request_reject' && e.nodeId) {
+        rejectionsPerNode.set(e.nodeId, (rejectionsPerNode.get(e.nodeId) ?? 0) + 1)
+      }
+    }
+
     return {
       at,
       seq: this.snapshotSeq++,
@@ -541,13 +554,24 @@ export class SimulationEngine {
         this.config.design.nodes.map((n) => {
           const state = this.nodeState.get(n.id)
           const queue = state?.['queue'] as { length?: number } | undefined
+          const queueDepth = queue?.length ?? 0
+          const queueMaxDepth = queueMaxDepthOf(n)
+          const inFlight = this.inFlightByNodeId.get(n.id) ?? 0
+          const cap = capacityOf(n)
+          const saturated =
+            (queueMaxDepth !== undefined && queueDepth >= Math.max(1, queueMaxDepth - 1)) ||
+            (cap > 0 && inFlight >= cap)
+          const isDown = this.failedNodes.has(n.id)
           return [
             n.id,
             {
               nodeId: n.id,
-              queueDepth: queue?.length ?? 0,
-              inFlight: this.inFlightByNodeId.get(n.id) ?? 0,
-              state: 'up' as const,
+              queueDepth,
+              inFlight,
+              state: isDown ? ('down' as const) : ('up' as const),
+              ...(queueMaxDepth !== undefined ? { queueMaxDepth } : {}),
+              rejectionsInWindow: rejectionsPerNode.get(n.id) ?? 0,
+              saturated,
             },
           ]
         }),
@@ -587,4 +611,32 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
   if (a.size !== b.size) return false
   for (const v of a) if (!b.has(v)) return false
   return true
+}
+
+/** Phase 6a: per-type queue max depth lookup for snapshot rendering. */
+function queueMaxDepthOf(
+  n: import('@/schema/types').Node,
+): number | undefined {
+  switch (n.type) {
+    case 'app_server':
+      return n.params.queue_max_depth
+    case 'database':
+      return n.params.read_queue_max_depth
+    case 'queue':
+      return n.params.max_depth > 0 ? n.params.max_depth : undefined
+    default:
+      return undefined
+  }
+}
+
+/** Phase 6a: per-type capacity for the saturation check. */
+function capacityOf(n: import('@/schema/types').Node): number {
+  switch (n.type) {
+    case 'app_server':
+      return n.params.instances * n.params.max_concurrent_per_instance
+    case 'database':
+      return n.params.read_capacity_rps
+    default:
+      return 0
+  }
 }

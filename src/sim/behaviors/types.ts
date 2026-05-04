@@ -44,6 +44,9 @@ export interface BehaviorContext {
    *  or undefined if no override is active. Caches use this in preference to
    *  their static params.hit_rate. */
   getCacheHitRateOverride: (nodeId: string) => number | undefined
+  /** Look up an in-flight request by id. Phase 6a reject_oldest needs the
+   *  displaced request's `path` to emit a failure response to ITS upstream. */
+  getRequest: (id: RequestId) => SimRequest | undefined
 }
 
 /**

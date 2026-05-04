@@ -1,4 +1,5 @@
 import type { Edge } from '@/schema/types'
+import type { SimRequest } from '../types'
 import { sampleEdgeLatency } from '../latency'
 import type { BehaviorContext, NewEvent } from './types'
 
@@ -43,17 +44,16 @@ export function forwardRequest(
 }
 
 /**
- * Emit a request_response toward the previous hop on the request's path.
- * If this node is the originator (or the request has no upstream hop),
- * returns [] — the response chain ends here and the engine drops the
- * request from in-flight tracking on origin arrival.
+ * Emit a request_response toward the previous hop on the given request's
+ * path. Same logic as forwardResponseUpstream but takes the request explicitly
+ * — used by Phase 6a reject_oldest to emit a failure response for the
+ * DISPLACED request, which is different from `ctx.request`.
  */
-export function forwardResponseUpstream(
-  ctx: BehaviorContext,
+export function forwardResponseFor(
+  request: SimRequest,
+  ctx: Pick<BehaviorContext, 'node' | 'incoming' | 'rng' | 'now'>,
   success: boolean,
 ): NewEvent[] {
-  const request = ctx.request
-  if (!request) return []
   const myIndex = request.path.indexOf(ctx.node.id)
   if (myIndex <= 0) return [] // origin or off-path; finalize here
   const previousNodeId = request.path[myIndex - 1]
@@ -74,6 +74,68 @@ export function forwardResponseUpstream(
         durationMs: ctx.now - request.arrivedAt,
       },
     },
+  ]
+}
+
+/**
+ * Emit a request_response toward the previous hop on `ctx.request`'s path.
+ * Returns [] at origin (engine drops the request from in-flight tracking).
+ */
+export function forwardResponseUpstream(
+  ctx: BehaviorContext,
+  success: boolean,
+): NewEvent[] {
+  if (!ctx.request) return []
+  return forwardResponseFor(ctx.request, ctx, success)
+}
+
+/**
+ * Phase 6a backpressure helper: emit a request_reject AND a fast failure
+ * response back to the previous hop. Use for capacity rejections where the
+ * upstream needs to know quickly so it can retry / fail-fast / circuit-break.
+ *
+ * Distinct from `rejectHere` (which only logs the reject and lets the
+ * upstream's timeout guard fire later) — that pattern is appropriate for
+ * partition rejection where the upstream legitimately can't reach us.
+ */
+export function rejectAndRespond(
+  ctx: BehaviorContext,
+  reason: 'capacity' | 'capacity_displaced' | 'circuit_open' | 'failed',
+  extra: Record<string, unknown> = {},
+): NewEvent[] {
+  if (!ctx.request) return []
+  return [
+    {
+      at: ctx.now,
+      kind: 'request_reject',
+      nodeId: ctx.node.id,
+      requestId: ctx.request.id,
+      payload: { reason, atNodeId: ctx.node.id, ...extra },
+    },
+    ...forwardResponseUpstream(ctx, false),
+  ]
+}
+
+/**
+ * Phase 6a reject_oldest helper: displace the queued `request`, emit its
+ * rejection event AND a failure response for it back to ITS upstream
+ * (which is generally the same upstream as ctx.request's, but we use the
+ * displaced request's own path to be safe).
+ */
+export function displaceAndRespond(
+  request: SimRequest,
+  ctx: BehaviorContext,
+  extra: Record<string, unknown> = {},
+): NewEvent[] {
+  return [
+    {
+      at: ctx.now,
+      kind: 'request_reject',
+      nodeId: ctx.node.id,
+      requestId: request.id,
+      payload: { reason: 'capacity_displaced', atNodeId: ctx.node.id, ...extra },
+    },
+    ...forwardResponseFor(request, ctx, false),
   ]
 }
 
