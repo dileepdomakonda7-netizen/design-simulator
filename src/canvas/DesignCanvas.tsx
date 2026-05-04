@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -8,16 +8,20 @@ import {
   MiniMap,
   Panel,
   useReactFlow,
+  useNodesState,
+  useEdgesState,
   type NodeChange,
   type EdgeChange,
   type Connection,
+  type Node as RFNode,
+  type Edge as RFEdge,
   type Viewport as RFViewport,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
 import { useDesignStore } from '@/store/designStore'
 import { createDefaultEdge, createDefaultNode } from '@/schema/defaults'
-import type { ComponentType } from '@/schema/types'
+import type { ComponentType, Node, Edge } from '@/schema/types'
 import { toRFNode, toRFEdge } from './adapters'
 
 import { ClientNode } from './nodes/ClientNode'
@@ -32,6 +36,9 @@ import { CdnNode } from './nodes/CdnNode'
 import { ObjectStorageNode } from './nodes/ObjectStorageNode'
 import { ExternalServiceNode } from './nodes/ExternalServiceNode'
 import { SketchyEdge } from './edges/SketchyEdge'
+
+type RFSchemaNode = RFNode<{ schemaNode: Node }>
+type RFSchemaEdge = RFEdge<{ schemaEdge: Edge }>
 
 // Sanity check: every ComponentType must have a matching nodeTypes entry,
 // or React Flow falls back to its default renderer for the missing type.
@@ -94,11 +101,53 @@ function DesignCanvasInner() {
 
   const reactFlow = useReactFlow()
 
-  const nodes = useMemo(() => schemaNodes.map(toRFNode), [schemaNodes])
-  const edges = useMemo(() => schemaEdges.map(toRFEdge), [schemaEdges])
+  // React Flow manages its own state (selection, dragging, dimensions, interim
+  // drag positions). The store remains the source of truth for design content;
+  // we sync FROM store TO React Flow on schema changes (see useEffect below)
+  // and FROM React Flow TO store on drag-end position / remove changes (see
+  // wrapped onNodesChange / onEdgesChange).
+  const [rfNodes, setRfNodes, onNodesChangeInternal] = useNodesState<RFSchemaNode>(
+    schemaNodes.map(toRFNode),
+  )
+  const [rfEdges, setRfEdges, onEdgesChangeInternal] = useEdgesState<RFSchemaEdge>(
+    schemaEdges.map(toRFEdge),
+  )
+
+  // Sync schema → React Flow when the store changes (undo/redo, load, debug add,
+  // drag-end persist). Reference-equality merge: nodes whose schema reference is
+  // unchanged keep their old RF entry verbatim, preserving `selected` and
+  // `dragging` flags. Only changed/new nodes get a fresh toRFNode result, and
+  // even those carry over `selected` from the prior RF entry.
+  useEffect(() => {
+    setRfNodes((prev) => {
+      const prevById = new Map(prev.map((n) => [n.id, n]))
+      return schemaNodes.map((s) => {
+        const oldRF = prevById.get(s.id)
+        if (oldRF && oldRF.data.schemaNode === s) {
+          return oldRF
+        }
+        const next = toRFNode(s) as RFSchemaNode
+        return oldRF?.selected ? { ...next, selected: true } : next
+      })
+    })
+  }, [schemaNodes, setRfNodes])
+
+  useEffect(() => {
+    setRfEdges((prev) => {
+      const prevById = new Map(prev.map((e) => [e.id, e]))
+      return schemaEdges.map((s) => {
+        const oldRF = prevById.get(s.id)
+        if (oldRF && oldRF.data?.schemaEdge === s) {
+          return oldRF
+        }
+        const next = toRFEdge(s) as RFSchemaEdge
+        return oldRF?.selected ? { ...next, selected: true } : next
+      })
+    })
+  }, [schemaEdges, setRfEdges])
 
   // When the active design changes (e.g. via load dialog), restore its viewport.
-  // We deliberately don't depend on `viewport` itself — that would fight live
+  // Deliberately not dependent on `viewport` itself — that would fight live
   // pan/zoom by snapping back to the persisted value mid-gesture.
   useEffect(() => {
     reactFlow.setViewport(viewport)
@@ -115,31 +164,32 @@ function DesignCanvasInner() {
     [updateViewport],
   )
 
-  // Position changes: only persist on drag-end (dragging === false). React Flow
-  // owns interim drag positions; the store is final-position-only, so each drag
-  // is a single undo entry instead of hundreds.
+  // CRITICAL: forward all changes to React Flow's internal state FIRST so
+  // selection / dimensions / interim positions update; THEN extract the changes
+  // we want to persist (drag-end position, remove). Dropping any change type
+  // (as the prior controlled-mode implementation did) breaks selection.
   const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      for (const change of changes) {
-        if (change.type === 'position' && change.dragging === false && change.position) {
-          updateNodePosition(change.id, change.position)
-        } else if (change.type === 'remove') {
-          removeNode(change.id)
+    (changes: NodeChange<RFSchemaNode>[]) => {
+      onNodesChangeInternal(changes)
+      for (const c of changes) {
+        if (c.type === 'position' && c.dragging === false && c.position) {
+          updateNodePosition(c.id, c.position)
+        } else if (c.type === 'remove') {
+          removeNode(c.id)
         }
-        // 'select', 'dimensions', 'add' (programmatic), and interim 'position'
-        // updates are handled by React Flow internally — no store action needed.
       }
     },
-    [updateNodePosition, removeNode],
+    [onNodesChangeInternal, updateNodePosition, removeNode],
   )
 
   const onEdgesChange = useCallback(
-    (changes: EdgeChange[]) => {
-      for (const change of changes) {
-        if (change.type === 'remove') removeEdge(change.id)
+    (changes: EdgeChange<RFSchemaEdge>[]) => {
+      onEdgesChangeInternal(changes)
+      for (const c of changes) {
+        if (c.type === 'remove') removeEdge(c.id)
       }
     },
-    [removeEdge],
+    [onEdgesChangeInternal, removeEdge],
   )
 
   // TODO(prompt-7-or-later): topology validation lives at simulation start.
@@ -157,8 +207,8 @@ function DesignCanvasInner() {
   return (
     <div className="w-full h-full relative">
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
+        nodes={rfNodes}
+        edges={rfEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         defaultViewport={viewport}

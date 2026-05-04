@@ -15,7 +15,7 @@ interface Props {
 
 const SELECTED_OPTS = {
   stroke: '#2563eb',
-  strokeWidth: 2.2,
+  strokeWidth: 3,
   fill: 'transparent',
   roughness: 2,
   bowing: 2,
@@ -36,12 +36,12 @@ function BaseNodeImpl({ schemaNode, icon, selected, width = 180, height = 80, ch
       {/* Body */}
       <RoughBox width={width} height={height} seed={seed} />
 
-      {/* Selection outline — slightly larger than body */}
+      {/* Selection outline — sketchy blue ring around the body */}
       {selected && (
-        <div className="absolute -inset-1 pointer-events-none">
+        <div className="absolute -inset-1.5 pointer-events-none">
           <RoughBox
-            width={width + 8}
-            height={height + 8}
+            width={width + 12}
+            height={height + 12}
             seed={seed + 1}
             options={SELECTED_OPTS}
           />
