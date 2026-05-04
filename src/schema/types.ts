@@ -1,19 +1,25 @@
 // ─── Enumerations ────────────────────────────────────────────────────────────
 
-export type ComponentType =
-  | 'client'
-  | 'load_balancer'
-  | 'api_gateway'
-  | 'app_server'
-  | 'cache'
-  | 'database'
-  | 'queue'
-  | 'pub_sub'
-  | 'cdn'
-  | 'object_storage'
-  | 'external_service'
+// Single source of truth: COMPONENT_TYPES is the runtime-iterable list,
+// ComponentType is its element-type. Adding a type means adding it once here.
+export const COMPONENT_TYPES = [
+  'client',
+  'load_balancer',
+  'api_gateway',
+  'app_server',
+  'cache',
+  'database',
+  'queue',
+  'pub_sub',
+  'cdn',
+  'object_storage',
+  'external_service',
+] as const
 
-export type EdgeKind = 'sync_rpc' | 'async_message' | 'replication'
+export type ComponentType = (typeof COMPONENT_TYPES)[number]
+
+export const EDGE_KINDS = ['sync_rpc', 'async_message', 'replication'] as const
+export type EdgeKind = (typeof EDGE_KINDS)[number]
 
 export type DatabaseSubtype = 'relational' | 'kv' | 'document'
 export type EvictionPolicy = 'lru' | 'lfu' | 'fifo'
