@@ -5,6 +5,7 @@ import { useDesignStore } from '@/store/designStore'
 import { listDesigns, loadDesignById } from '@/persistence/designStorage'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { DesignCanvas } from '@/canvas/DesignCanvas'
+import { SimDebugPage } from '@/sim/debugPage/SimDebugPage'
 
 // ─── Placeholder views (build replaced by DesignCanvas) ───────────────────────
 
@@ -21,18 +22,8 @@ function SketchModePlaceholder() {
   )
 }
 
-function SimulateModePlaceholder() {
-  return (
-    <div className="flex flex-col items-center justify-center h-full text-center">
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 max-w-sm">
-        <h2 className="text-lg font-semibold text-gray-800 mb-1">Simulate Mode</h2>
-        <p className="text-sm text-gray-500">
-          DES engine, metrics panels, and event inspector arrive in Prompt 4.
-        </p>
-      </div>
-    </div>
-  )
-}
+// SimulateModePlaceholder replaced by SimDebugPage (4a).
+// Real Simulate mode UI arrives in Prompt 4c.
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 
@@ -58,7 +49,7 @@ export default function App() {
       <main className="flex-1 overflow-hidden">
         {mode === 'build' && <DesignCanvas />}
         {mode === 'sketch' && <SketchModePlaceholder />}
-        {mode === 'simulate' && <SimulateModePlaceholder />}
+        {mode === 'simulate' && <SimDebugPage />}
       </main>
     </div>
   )
