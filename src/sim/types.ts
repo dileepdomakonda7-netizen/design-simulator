@@ -28,6 +28,10 @@ export type SimEventKind =
   | 'partition_end'
   | 'simulation_start'
   | 'simulation_end'
+  // 4b: scheduled by the queue behavior to drain its internal queue at
+  // consumer_processing_rps. Self-targeted at the queue node; not triggered
+  // by request flow.
+  | 'queue_consumer_tick'
 
 /**
  * A scheduled event. Immutable once enqueued — behaviors create new events,

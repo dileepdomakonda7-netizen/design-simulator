@@ -19,25 +19,45 @@ import type { BehaviorContext, NewEvent } from './behaviors/types'
  *
  * Invariants (preserved by the implementation below):
  *
- *   1. The queue is the only mutable scheduling state. Behaviors return desired
- *      events; the engine alone enqueues them.
+ *   1. The queue is the only mutable scheduling state. Behaviors return
+ *      desired events; the engine alone enqueues them.
  *   2. `processEvent` is the only consumer of dequeued events.
  *   3. `scheduleEvent` is the only place that assigns event ids; ids are
  *      monotonically increasing.
  *   4. `causeEventId` defaults to the triggering event's id when a behavior
  *      emits a new event without specifying one.
  *   5. The virtual clock cannot move backward (asserted in VirtualClock).
- *   6. Events with the same `at` fire in id-order (first-scheduled-first).
- *   7. The main loop yields to the event loop every 1000 events so the worker
- *      remains responsive to `cancel()`.
- *   8. Snapshots are NOT in the event log — they are a parallel cadence driven
- *      by `nextSnapshotAt`. Choice documented in PROGRESS.md.
+ *   6. Events with the same `at` fire in id order (first-scheduled-first).
+ *   7. The main loop yields to the event loop every 1000 events so the
+ *      worker remains responsive to `cancel()`.
+ *   8. Snapshots are NOT in the event log — parallel cadence via
+ *      `nextSnapshotAt`. Choice documented in PROGRESS.md.
+ *
+ * Per-node state (4b additions):
+ *
+ *   - `nodeState`: a `Map<string, Record<string, unknown>>` exposed to
+ *     behaviors via BehaviorContext.nodeState. Behaviors may freely read
+ *     and write their own entry. This is the controlled exception to
+ *     behavior purity — necessary for queue depths, RR indices, timeout
+ *     guards, etc. State is per-(simulation, node), reset on each run.
+ *   - `inFlightByNodeId`: maintained by the engine, exposed read-only to
+ *     behaviors. Increment on `request_receive`, decrement on
+ *     `request_send` / `request_complete` / `request_reject` /
+ *     `request_timeout`. Approximate but good enough for least-connections
+ *     routing and for snapshot rendering.
+ *   - The engine OWNS path tracking — appends to `request.path` on every
+ *     `request_receive` at a new node. Behaviors don't manipulate path.
+ *   - The engine auto-creates `SimRequest` records when it sees a
+ *     `request_send` for an unknown request id (e.g. queue tick → consumer,
+ *     pub/sub fanout). Originator is the node that emitted the send.
  */
 export class SimulationEngine {
   private queue = new EventQueue()
   private clock = new VirtualClock()
   private log = new EventLog()
   private requests = new Map<RequestId, SimRequest>()
+  private nodeState = new Map<string, Record<string, unknown>>()
+  private inFlightByNodeId = new Map<string, number>()
   private nextEventId: EventId = 0
   private nextRequestNumber = 0
   private snapshotSeq = 0
@@ -58,21 +78,13 @@ export class SimulationEngine {
     this.cancelled = true
   }
 
-  /**
-   * Runs the simulation to completion or until cancel(). Async because it
-   * yields to the event loop periodically — without this, a long simulation
-   * would block the worker from receiving cancel messages.
-   */
   async run(): Promise<void> {
-    // 1. Emit simulation_start at t=0 (id=0).
     this.scheduleEvent({
       at: 0,
       kind: 'simulation_start',
       payload: { seed: this.config.seed, durationMs: this.config.durationMs },
     })
 
-    // 2. Generate all traffic upfront and enqueue. Traffic events come pre-ided
-    //    from the generator; the engine adopts its returned counter.
     const traffic = generateTraffic(
       this.config.design,
       this.config.traffic,
@@ -85,7 +97,6 @@ export class SimulationEngine {
     this.nextRequestNumber = traffic.nextRequestId
     for (const ev of traffic.events) {
       this.queue.push(ev)
-      // Create the SimRequest record now so behaviors can find it on arrival.
       if (ev.kind === 'request_arrival' && ev.requestId && ev.nodeId) {
         this.requests.set(ev.requestId, {
           id: ev.requestId,
@@ -93,34 +104,28 @@ export class SimulationEngine {
           originNodeId: ev.nodeId,
           path: [ev.nodeId],
           attempt: 0,
-          sessionId: ev.requestId, // v1: session = request; v2 may unify multiple
+          sessionId: ev.requestId,
           causalContext: {},
         })
       }
     }
 
-    // 3. Compile chaos events from ChaosEventSpecs.
-    //    4a: stub. Phase 4c implements compilation; if config.chaos is empty
-    //    nothing breaks here either way.
     if (this.config.chaos.length > 0) {
       // Reserved for Phase 4c.
     }
 
-    // 4. Schedule simulation_end at the duration boundary.
     this.scheduleEvent({
       at: this.config.durationMs,
       kind: 'simulation_end',
       payload: { reason: 'completed' as const },
     })
 
-    // 5. Main loop.
     let processedSinceYield = 0
     while (!this.cancelled) {
       const next = this.queue.peek()
       if (!next) break
       if (next.at > this.config.durationMs) break
 
-      // Emit any snapshots due before the next event fires.
       while (
         this.nextSnapshotAt <= next.at &&
         this.nextSnapshotAt <= this.config.durationMs
@@ -145,73 +150,124 @@ export class SimulationEngine {
       }
     }
 
-    // 6. Final snapshot at the end time.
     this.emitSnapshot(this.clock.now())
   }
 
   // ─── Event dispatch ───────────────────────────────────────────────────────
 
   private processEvent(ev: SimEvent): void {
-    // Engine-internal events: nothing to dispatch.
     if (ev.kind === 'simulation_start' || ev.kind === 'simulation_end') return
     if (!ev.nodeId) return
 
-    const node = this.config.design.nodes.find((n) => n.id === ev.nodeId)
-    if (!node) return
+    // (a) Auto-create SimRequest on a request_send with a previously-unseen
+    //     request id. Used by queue tick → consumer and pub/sub fanout.
+    if (
+      ev.kind === 'request_send' &&
+      ev.requestId &&
+      ev.nodeId &&
+      !this.requests.has(ev.requestId)
+    ) {
+      this.requests.set(ev.requestId, {
+        id: ev.requestId,
+        arrivedAt: ev.at,
+        originNodeId: ev.nodeId,
+        path: [ev.nodeId],
+        attempt: 0,
+        sessionId: ev.requestId,
+        causalContext: {},
+      })
+    }
 
-    // 4a simplification: every non-client node dispatches as 'echo'.
-    // 4b will use node.type directly and remove 'echo' from the registry.
-    const dispatchType = node.type === 'client' ? 'client' : 'echo'
-    const behavior = getBehavior(dispatchType, ev.kind)
-
+    // (b) Path tracking: append target on receive (forward path only).
     const request = ev.requestId ? this.requests.get(ev.requestId) : undefined
+    if (
+      ev.kind === 'request_receive' &&
+      request &&
+      request.path[request.path.length - 1] !== ev.nodeId
+    ) {
+      request.path.push(ev.nodeId)
+    }
+
+    // (c) In-flight bookkeeping (BEFORE behavior so it sees current values).
+    this.updateInFlight(ev)
+
+    // (d) Look up the node and its behavior.
+    const node = this.config.design.nodes.find((n) => n.id === ev.nodeId)
+    if (!node) {
+      this.maybeFinalize(ev, request)
+      return
+    }
+    const behavior = getBehavior(node.type, ev.kind)
 
     if (behavior) {
+      const state = this.getOrInitNodeState(node.id)
+      // Persistent per-node rng — closure state advances across invocations.
+      let rng = state['__rng'] as (() => number) | undefined
+      if (!rng) {
+        rng = subStream(this.config.seed, `node:${node.id}`)
+        state['__rng'] = rng
+      }
+
       const ctx: BehaviorContext = {
         node,
         outgoing: this.config.design.edges.filter((e) => e.source === node.id),
         incoming: this.config.design.edges.filter((e) => e.target === node.id),
-        rng: subStream(this.config.seed, `node:${node.id}`),
+        rng,
         now: this.clock.now(),
         triggeringEvent: ev,
+        nodeState: state,
+        inFlightByNodeId: this.inFlightByNodeId,
         ...(request ? { request } : {}),
       }
+
       const newEvents = behavior(ctx)
       for (const ne of newEvents) {
         this.scheduleEvent(this.toSpec(ne, ev.id))
       }
     }
 
-    // 4a fallback: client has no registered behavior, so the engine itself
-    // forwards each request_arrival to the next-hop node as a request_receive.
-    // 4b moves this into a real client behavior.
-    if (ev.kind === 'request_arrival' && request) {
-      const outgoing = this.config.design.edges.find((e) => e.source === node.id)
-      if (outgoing) {
-        const networkLatency = outgoing.params.network_latency_ms_p50 || 1
-        this.scheduleEvent({
-          at: this.clock.now() + networkLatency,
-          kind: 'request_receive',
-          nodeId: outgoing.target,
-          edgeId: outgoing.id,
-          requestId: request.id,
-          causeEventId: ev.id,
-          payload: { fromNodeId: node.id, networkLatencyMs: networkLatency },
-        })
-        request.path.push(outgoing.target)
-      }
+    // (e) Finalize at origin (drop from in-flight map). Done AFTER behavior
+    //     so the client behavior can read the response one last time.
+    this.maybeFinalize(ev, request)
+  }
+
+  private maybeFinalize(ev: SimEvent, request: SimRequest | undefined): void {
+    if (
+      ev.kind === 'request_response' &&
+      request &&
+      request.originNodeId === ev.nodeId
+    ) {
+      this.requests.delete(request.id)
     }
+  }
+
+  private updateInFlight(ev: SimEvent): void {
+    if (!ev.nodeId) return
+    const m = this.inFlightByNodeId
+    switch (ev.kind) {
+      case 'request_receive':
+        m.set(ev.nodeId, (m.get(ev.nodeId) ?? 0) + 1)
+        break
+      case 'request_send':
+      case 'request_complete':
+      case 'request_reject':
+      case 'request_timeout':
+        m.set(ev.nodeId, Math.max(0, (m.get(ev.nodeId) ?? 0) - 1))
+        break
+    }
+  }
+
+  private getOrInitNodeState(nodeId: string): Record<string, unknown> {
+    let s = this.nodeState.get(nodeId)
+    if (!s) {
+      s = {}
+      this.nodeState.set(nodeId, s)
+    }
+    return s
   }
 
   // ─── Scheduling helpers ───────────────────────────────────────────────────
 
-  /**
-   * Convert a behavior's NewEvent into an Omit<SimEvent, 'id'>, defaulting
-   * `causeEventId` to the triggering event's id when not supplied.
-   *
-   * Conditional spreads keep `exactOptionalPropertyTypes` happy: omitted
-   * fields stay omitted, never `undefined`.
-   */
   private toSpec(ne: NewEvent, defaultCauseId: EventId): Omit<SimEvent, 'id'> {
     return {
       at: ne.at,
@@ -243,8 +299,18 @@ export class SimulationEngine {
     const failedInWindow = windowEvents.filter(
       (e) => e.kind === 'request_timeout' || e.kind === 'request_reject',
     )
+    // Only count responses that reached their origin AND were successful.
+    const successfulResponses = completedInWindow.filter((e) => {
+      const p = e.payload as { success?: boolean; toNodeId?: string } | undefined
+      const req = this.requests.get(e.requestId ?? '')
+      // After finalization the request is deleted, so we use the heuristic
+      // p.toNodeId === origin for completed-and-finalized requests.
+      // For window stats, a "completed" request is one whose response payload
+      // says success === true at the originator (toNodeId === origin if known).
+      return p?.success === true && (!req || req.originNodeId === p.toNodeId)
+    })
 
-    const latencies = completedInWindow
+    const latencies = successfulResponses
       .map((e) => {
         const p = e.payload as { durationMs?: number } | undefined
         return p?.durationMs ?? 0
@@ -261,23 +327,31 @@ export class SimulationEngine {
       at,
       seq: this.snapshotSeq++,
       nodes: Object.fromEntries(
-        this.config.design.nodes.map((n) => [
-          n.id,
-          // 4a: echo behavior doesn't track queues; 4b's real behaviors will.
-          { nodeId: n.id, queueDepth: 0, inFlight: 0, state: 'up' as const },
-        ]),
+        this.config.design.nodes.map((n) => {
+          const state = this.nodeState.get(n.id)
+          const queue = state?.['queue'] as { length?: number } | undefined
+          return [
+            n.id,
+            {
+              nodeId: n.id,
+              queueDepth: queue?.length ?? 0,
+              inFlight: this.inFlightByNodeId.get(n.id) ?? 0,
+              state: 'up' as const,
+            },
+          ]
+        }),
       ),
       windowMetrics: {
         windowMs,
-        throughputRps: completedInWindow.length / (windowMs / 1000),
+        throughputRps: successfulResponses.length / (windowMs / 1000),
         latencyMsP50: percentile(latencies, 0.5),
         latencyMsP95: percentile(latencies, 0.95),
         latencyMsP99: percentile(latencies, 0.99),
         errorRate:
-          completedInWindow.length + failedInWindow.length === 0
+          successfulResponses.length + failedInWindow.length === 0
             ? 0
             : failedInWindow.length /
-              (completedInWindow.length + failedInWindow.length),
+              (successfulResponses.length + failedInWindow.length),
       },
       cumulativeMetrics: {
         totalRequestsArrived: cumArrivals,
