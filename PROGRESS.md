@@ -1,5 +1,62 @@
 # Progress
 
+## Phase 3b — Build Mode: Palette + Inspector + Annotation Layer (complete)
+
+`npm run dev` → http://localhost:5173 (build mode is now feature-complete per SPEC §3 / §10)
+`npm run typecheck` → 0 errors
+`npm run lint` → 0 errors, 0 warnings
+`npm run build` → 477 kB JS / 37 kB CSS gzipped (~146 kB / 7 kB gz)
+
+### Dependencies added in Prompt 3b
+
+- `perfect-freehand@1` — pen strokes for the annotation layer
+
+### Acceptance criteria — Prompt 3b
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | Drag any of 11 types from palette → node appears at drop position; persists across refresh | ✅ |
+| 2 | Click node → inspector shows type + label (editable) + all per-type fields populated | ✅ |
+| 3 | Edit field → commits after 300ms idle (or on blur/Enter); auto-save fires within 500ms; undo reverts | ✅ |
+| 4 | hit_rate / failure_rate sliders display percent; round-trip through localStorage as 0..1 | ✅ |
+| 5 | Click edge → edge form; changing kind sync_rpc→async_message updates stroke style (dashed) | ✅ |
+| 6 | Click empty canvas → inspector shows empty state | ✅ |
+| 7 | Pen tool active → cursor crosshair, drag draws stroke, persists across refresh | ✅ |
+| 8 | Pen on → nodes don't drag, canvas doesn't pan, zoom still works | ✅ (zoom kept enabled — see Decisions) |
+| 9 | Eraser → click stroke removes it | ✅ |
+| 10 | Clear annotations with inline Yes/No confirm | ✅ |
+| 11 | Pen off → normal interaction resumes | ✅ |
+| 12 | Sketch / Simulate modes don't show pen tool buttons | ✅ |
+| 13 | Palette collapse/expand persists for the session | ✅ |
+| 14 | ~50 nodes / ~80 edges / ~30 annotations stays >30 fps on pan/zoom | ✅ — strokes use cached d-string, no per-render perfect-freehand |
+| 15 | typecheck / lint / build all clean; no new `as` casts in inspector forms | ✅ |
+
+### Decisions left to discretion in the prompt
+
+**Panel border style: clean Tailwind, not rough.js.** Rough.js panel borders compete visually with the canvas content (busy hatching at the edges of the screen). Clean rounded panels with `border-neutral-200` keep the focus on the design itself. The sketchy aesthetic still applies inside (Caveat fonts in palette/inspector headers, hand-drawn icons in palette items, rough nodes/edges in the canvas).
+
+**Zoom kept enabled during pen mode.** Pan and node interaction are disabled when pen mode is on, but `zoomOnScroll` stays on so the user can adjust their viewport without leaving pen mode (e.g., zoom in to circle a small node, zoom out to draw a region boundary).
+
+**Stroke storage caches the SVG path string.** SPEC §5 stores raw points; we additionally cache `data.cachedPath` at creation time so re-renders of existing strokes don't re-run perfect-freehand. The raw `points` and `options` are still stored, so a future re-parse / restyle is possible. This is documented at the top of `AnnotationLayer.tsx` and the `pathFromAnnotation` helper falls back to recomputation if the cache is missing (e.g., for hand-edited JSON imports).
+
+**Selection sourcing from React Flow's internal store, not the design store.** Selection is UI state, not design content. The Inspector reads `useRFStore` selectors that return primitive `id | null` values so default reference equality works — no `useShallow` needed.
+
+**Inspector reads node/edge data from the design store, not from React Flow.** This way every form edit dispatches back through `updateNodeParams<T>` / `updateEdgeParams` and round-trips through localStorage and the temporal undo stack.
+
+**`updateNodeParams<T>` is the only way forms touch params.** No `as Node` casts in any of the 11 forms or the EdgeForm. The narrowed dispatch (`update(node.id, 'database', { replicas: 5 })`) is type-checked end to end.
+
+### Commits in this phase
+
+1. `prompt-3b-deps` — perfect-freehand, COMPONENT_TYPES const, uiStore
+2. `prompt-3b-palette` — draggable Palette
+3. `prompt-3b-inspector-fields` — useDebouncedCommit + 6 field primitives + RetryPolicyEditor + CircuitBreakerEditor + Section + CommonNodeFields + NotesField
+4. `prompt-3b-inspector-forms` — 11 type-narrowed param forms + NodeInspector dispatcher
+5. `prompt-3b-edge-inspector` — EdgeForm + EdgeInspector + Inspector wrapper with RF selection sourcing
+6. `prompt-3b-annotation-layer` — perfect-freehand layer in flow coords with cached SVG path
+7. `prompt-3b-toolbar-pen-tool` — PenToolGroup + Toolbar gating + DesignCanvas integration (drop handler, mounts, pen-mode RF prop disabling)
+
+---
+
 ## Phase 3a — Build Mode Canvas (complete)
 
 `npm run dev` → http://localhost:5173 (build mode now shows the real canvas)
