@@ -20,10 +20,6 @@ interface StrokeData {
   cachedPath: string
 }
 
-/**
- * Convert perfect-freehand stroke polygon to an SVG path d-string.
- * Quadratic curves between midpoints make the polygon read as smooth.
- */
 function strokeToSvgPath(stroke: number[][]): string {
   if (stroke.length === 0) return ''
   const first = stroke[0]
@@ -47,10 +43,6 @@ function computeStrokePath(points: number[][]): string {
   return strokeToSvgPath(getStroke(points, STROKE_OPTIONS))
 }
 
-/**
- * Read cached SVG path from an annotation. Falls back to recomputation if
- * the annotation predates the cache (or was hand-edited in the JSON export).
- */
 function pathFromAnnotation(ann: Annotation): string {
   const data = ann.data as Partial<StrokeData> | undefined
   if (data?.cachedPath) return data.cachedPath
@@ -58,6 +50,29 @@ function pathFromAnnotation(ann: Annotation): string {
   return ''
 }
 
+/**
+ * Annotation layer — overlay above React Flow.
+ *
+ * Critical layout details (rediscovered the hard way):
+ *
+ * 1. The overlay MUST sit at z-index >= 7 to be above React Flow's internals.
+ *    React Flow assigns z-index up to 6 (.react-flow__selection); the
+ *    .react-flow__renderer is at z-index 4. With no explicit z-index, our
+ *    overlay would sit at z-auto (= 0) in the wrapper's stacking context,
+ *    BEHIND the React Flow pane regardless of DOM order — so even with
+ *    pointer-events: auto the pane swallows the events.
+ *
+ * 2. The overlay is a <div> wrapper, not a bare <svg>. Divs handle CSS
+ *    pointer-events / cursor predictably; SVG <svg> elements have peculiar
+ *    pointer-events behavior on empty regions.
+ *
+ * 3. pointer-events on the wrapper toggles by penTool:
+ *      - 'off'    → 'none'   (clicks pass through to React Flow normally)
+ *      - 'pen'    → 'auto'   (wrapper captures draw events)
+ *      - 'eraser' → 'auto'   (wrapper captures, but pointer handlers no-op;
+ *                              path elements inside get pointer-events: auto
+ *                              so click-to-remove still works)
+ */
 export function AnnotationLayer() {
   const annotations = useDesignStore((s) => s.design.annotations)
   const addAnnotation = useDesignStore((s) => s.addAnnotation)
@@ -76,7 +91,8 @@ export function AnnotationLayer() {
   )
 
   const onPointerDown = useCallback(
-    (e: React.PointerEvent<SVGSVGElement>) => {
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      // Only the pen draws; eraser / off no-op (click-to-remove fires on path elements).
       if (penTool !== 'pen') return
       e.preventDefault()
       e.currentTarget.setPointerCapture(e.pointerId)
@@ -88,7 +104,7 @@ export function AnnotationLayer() {
   )
 
   const onPointerMove = useCallback(
-    (e: React.PointerEvent<SVGSVGElement>) => {
+    (e: React.PointerEvent<HTMLDivElement>) => {
       if (!drawingRef.current || penTool !== 'pen') return
       const flow = reactFlow.screenToFlowPosition({ x: e.clientX, y: e.clientY })
       setLivePoints((prev) =>
@@ -99,13 +115,13 @@ export function AnnotationLayer() {
   )
 
   const onPointerUp = useCallback(
-    (e: React.PointerEvent<SVGSVGElement>) => {
+    (e: React.PointerEvent<HTMLDivElement>) => {
       if (!drawingRef.current) return
       drawingRef.current = false
       try {
         e.currentTarget.releasePointerCapture(e.pointerId)
       } catch {
-        // ignore — pointer may already be released
+        // pointer may already be released
       }
       const points = livePoints
       setLivePoints(null)
@@ -123,47 +139,55 @@ export function AnnotationLayer() {
     [livePoints, addAnnotation],
   )
 
-  const layerPointerEvents = penTool === 'off' ? 'none' : 'auto'
-  // Pen scales with the inverse of zoom so the visual stroke width feels consistent.
-  // Without this, drawing at zoom 0.5 would produce visually 2× thicker strokes than at zoom 1.
-  const strokeFill = '#1a1a1a'
+  const wrapperPointerEvents = penTool === 'off' ? 'none' : 'auto'
+  const cursor =
+    penTool === 'pen' ? 'crosshair' : penTool === 'eraser' ? 'cell' : 'default'
 
   return (
-    <svg
+    <div
       className="absolute inset-0"
       style={{
-        pointerEvents: layerPointerEvents,
-        cursor: penTool === 'pen' ? 'crosshair' : penTool === 'eraser' ? 'cell' : 'default',
+        zIndex: 10, // above React Flow's .react-flow__selection (z-index: 6)
+        pointerEvents: wrapperPointerEvents,
+        cursor,
+        touchAction: penTool === 'pen' ? 'none' : 'auto', // prevent touch-pan eating drags
       }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      {/* Apply React Flow's transform so flow-coord points render at the right place */}
-      <g transform={`translate(${vx} ${vy}) scale(${zoom})`}>
-        {annotations.map((ann) => {
-          const d = pathFromAnnotation(ann)
-          if (!d) return null
-          return (
-            <path
-              key={ann.id}
-              d={d}
-              fill={strokeFill}
-              style={{
-                pointerEvents: penTool === 'eraser' ? 'auto' : 'none',
-                cursor: penTool === 'eraser' ? 'cell' : 'inherit',
-              }}
-              onClick={(e) => {
-                if (penTool !== 'eraser') return
-                e.stopPropagation()
-                removeAnnotation(ann.id)
-              }}
-            />
-          )
-        })}
-        {livePath && <path d={livePath} fill={strokeFill} pointerEvents="none" />}
-      </g>
-    </svg>
+      <svg
+        width="100%"
+        height="100%"
+        style={{ pointerEvents: 'none', overflow: 'visible' }}
+      >
+        {/* Apply React Flow's transform so flow-coord points render at the right place */}
+        <g transform={`translate(${vx} ${vy}) scale(${zoom})`}>
+          {annotations.map((ann) => {
+            const d = pathFromAnnotation(ann)
+            if (!d) return null
+            return (
+              <path
+                key={ann.id}
+                d={d}
+                fill="#1a1a1a"
+                style={{
+                  // Click-to-remove only in eraser mode; otherwise let events pass through
+                  pointerEvents: penTool === 'eraser' ? 'auto' : 'none',
+                  cursor: penTool === 'eraser' ? 'cell' : 'inherit',
+                }}
+                onClick={(e) => {
+                  if (penTool !== 'eraser') return
+                  e.stopPropagation()
+                  removeAnnotation(ann.id)
+                }}
+              />
+            )
+          })}
+          {livePath && <path d={livePath} fill="#1a1a1a" style={{ pointerEvents: 'none' }} />}
+        </g>
+      </svg>
+    </div>
   )
 }

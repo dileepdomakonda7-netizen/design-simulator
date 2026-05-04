@@ -54,6 +54,22 @@
 5. `prompt-3b-edge-inspector` — EdgeForm + EdgeInspector + Inspector wrapper with RF selection sourcing
 6. `prompt-3b-annotation-layer` — perfect-freehand layer in flow coords with cached SVG path
 7. `prompt-3b-toolbar-pen-tool` — PenToolGroup + Toolbar gating + DesignCanvas integration (drop handler, mounts, pen-mode RF prop disabling)
+8. `fix-3b-pen-tool-events` — see "Bug fix" below
+
+### Bug fix — pen tool events lost behind React Flow (post-3b follow-up commit)
+
+**Symptom**: Activating pen mode in the toolbar did not enable drawing. Click-drag with pen on produced no stroke at all.
+
+**Root cause**: stacking order. The `<svg>` element from AnnotationLayer was a sibling of the React Flow root and used `position: absolute; inset: 0` with `z-auto`. React Flow assigns z-index up to **6** on its internal elements (`.react-flow__renderer` is z=4, `.react-flow__selection` is z=6), all sharing our wrapper's stacking context. Even with `pointer-events: auto` on the SVG, React Flow's pane sat in front in stacking order and ate every pointer event before our SVG saw it. DOM order doesn't beat z-index — verified by reading React Flow's bundled CSS for the actual values.
+
+**Fix** (`src/canvas/AnnotationLayer.tsx`):
+
+1. Wrap the SVG in a `<div>` with `z-index: 10` (above any React Flow internal). Pointer handlers move from the SVG to the div — divs handle CSS pointer-events / cursor predictably; bare `<svg>` elements have peculiar behavior on empty regions.
+2. Wrapper `pointer-events`: `'none'` when penTool is off, `'auto'` when pen or eraser. With `'none'`, clicks pass through to React Flow normally; with `'auto'`, the wrapper captures events.
+3. `touch-action: none` while pen is active so touch-drags don't trigger touch panning before our pointer handlers run.
+4. Inner `<svg>` is purely decorative (`pointer-events: none`). Annotation `<path>` elements get `pointer-events: auto` only in eraser mode for click-to-remove.
+
+The other commonly-broken-together items were already correct: `panOnDrag` / `nodesDraggable` / `nodesConnectable` / `elementsSelectable` are bound to `penOff = penTool === 'off'`, so React Flow interaction is fully disabled in both pen and eraser modes.
 
 ---
 
