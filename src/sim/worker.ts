@@ -3,8 +3,18 @@ import { SimulationEngine } from './engine'
 import type { SimulationWorkerApi } from './workerProtocol'
 
 // Behavior modules register themselves at import time via side effects.
-// 4a: only echo. 4b will replace this with the 11 real per-type behaviors.
-import './behaviors/echoBehavior'
+// Order doesn't matter — registration is per (componentType, eventKind) pair.
+import './behaviors/clientBehavior'
+import './behaviors/loadBalancerBehavior'
+import './behaviors/apiGatewayBehavior'
+import './behaviors/appServerBehavior'
+import './behaviors/cacheBehavior'
+import './behaviors/databaseBehavior'
+import './behaviors/queueBehavior'
+import './behaviors/pubSubBehavior'
+import './behaviors/cdnBehavior'
+import './behaviors/objectStorageBehavior'
+import './behaviors/externalServiceBehavior'
 
 let currentEngine: SimulationEngine | null = null
 
