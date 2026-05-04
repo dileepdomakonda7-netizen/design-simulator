@@ -10,6 +10,7 @@ import type {
   TrafficSource,
 } from '@/sim/types'
 import type { SimulationWorkerApi } from '@/sim/workerProtocol'
+import { computeDigest } from '@/sim/digest'
 import { EventLogTable } from './eventLogTable'
 
 const DEFAULT_SEED = 42
@@ -28,50 +29,8 @@ function defaultCounters(): Counters {
   return { events: 0, requestsArrived: 0, requestsCompleted: 0, requestsFailed: 0 }
 }
 
-/**
- * cyrb53 — fast 53-bit string hash, sufficient for run-to-run determinism digests.
- * Reference: https://stackoverflow.com/a/52171480
- */
-function cyrb53(str: string, seed = 0): number {
-  let h1 = 0xdeadbeef ^ seed
-  let h2 = 0x41c6ce57 ^ seed
-  for (let i = 0; i < str.length; i++) {
-    const ch = str.charCodeAt(i)
-    h1 = Math.imul(h1 ^ ch, 2654435761)
-    h2 = Math.imul(h2 ^ ch, 1597334677)
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507)
-  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909)
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507)
-  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909)
-  return 4294967296 * (2097151 & h2) + (h1 >>> 0)
-}
-
-/**
- * Determinism digest of an entire run's event stream.
- *
- * The events arrive on the main thread via Comlink-proxied callbacks.
- * postMessage is FIFO within one channel, but defending against any future
- * scheduling drift (Comlink batching, React concurrent rendering interleaving
- * with message handlers, etc.) we re-sort here by the SAME tie-break the
- * priority queue uses: (at, id). The engine assigns `id` monotonically as it
- * schedules events, so the sort-key is fully determined by the engine's
- * scheduling order — independent of the order callbacks happened to fire on
- * the main thread.
- *
- * `id` is also included in the per-event key so two events with the same
- * (at, kind, nodeId, requestId) but different ids contribute different bytes
- * to the hash. Without this, any two same-`at` events would collide.
- */
-function computeDigest(events: readonly SimEvent[]): string {
-  const sorted = [...events].sort((a, b) => a.at - b.at || a.id - b.id)
-  const serial = sorted
-    .map(
-      (e) => `${e.at}:${e.id}:${e.kind}:${e.nodeId ?? ''}:${e.requestId ?? ''}`,
-    )
-    .join('|')
-  return cyrb53(serial).toString(16)
-}
+// computeDigest moved to src/sim/digest.ts so vitest can exercise it
+// against the same engine output the browser produces.
 
 function buildConfig(
   design: ReturnType<typeof useDesignStore.getState>['design'],
@@ -174,9 +133,27 @@ export function SimDebugPage() {
     }
 
     const onComplete = () => {
-      const d = computeDigest(allEventsRef.current)
-      ;(window as Window & { __lastDigest?: string }).__lastDigest = d
-      console.log('digest:', d, '(events:', allEventsRef.current.length + ')')
+      const events = allEventsRef.current
+      const d = computeDigest(events)
+      const w = window as Window & {
+        __lastDigest?: string
+        __lastEvents?: SimEvent[]
+      }
+      w.__lastDigest = d
+      w.__lastEvents = events
+      // Diagnostic dump for determinism investigations: first 10 + last 10
+      // events in priority-queue order. Compare two runs side by side via the
+      // browser console.
+      const inOrder = [...events].sort((a, b) => a.at - b.at || a.id - b.id)
+      const fmt = (e: SimEvent) =>
+        `#${e.id} at=${e.at.toFixed(3)} ${e.kind} node=${e.nodeId ?? '-'} req=${e.requestId ?? '-'} cause=${e.causeEventId ?? '-'} payload=${JSON.stringify(e.payload ?? null)}`
+      console.log(
+        `digest: ${d}  events: ${events.length}\n` +
+          'first 10:\n  ' +
+          inOrder.slice(0, 10).map(fmt).join('\n  ') +
+          '\nlast 10:\n  ' +
+          inOrder.slice(-10).map(fmt).join('\n  '),
+      )
       setDigest(d)
       setRunning(false)
     }

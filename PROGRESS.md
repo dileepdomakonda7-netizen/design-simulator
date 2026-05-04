@@ -104,6 +104,48 @@ Side benefits:
 - `client → cache → database` with `hit_rate=0.0` at 10 RPS / 5s → arrived ≈ completed ≈ 50, p99 includes DB latency.
 - Same chain with `hit_rate=1.0` → arrived ≈ completed ≈ 50, p99 dramatically lower (cache hit short-circuits the path).
 
+### Investigation — engine determinism (after the digest fix)
+
+**Report**: three sequential seed=42 runs in the browser produced three different digests despite identical metric counts, even after the digest sort+id fix.
+
+**Diagnostic step (per the user's prompt: "DO NOT GUESS")**: I built a Node-side test harness using vitest. It:
+
+1. Constructs a fixture design with **fixed string ids** (no nanoid) so two test invocations see identical input.
+2. Runs `SimulationEngine` directly in-process — no worker, no Comlink, no React.
+3. Exercises the user's exact reproducer: `client → cache(hit_rate=0) → DB`, 5 s, 10 RPS, seed 42.
+4. Calls `runOnce(seed=42)` THREE TIMES sequentially in the same Node process — sharing module state with the registry, behaviors, and any module-level closures the user's hypothesis menu pointed at.
+5. Hashes each run with the same `computeDigest` the browser uses (extracted to `src/sim/digest.ts` so tests can call it).
+6. Asserts deep-equality of event arrays AND digest equality across runs.
+7. Adds a `structuredClone` roundtrip test to model the worker→main-thread serialization boundary.
+8. Runs in both `pool: 'forks'` and `pool: 'threads'` to surface any cross-thread races.
+
+**All seven tests pass, every time, including the user's exact reproducer.**
+
+What this rules out:
+- `Math.random()` / `Date.now()` / `performance.now()` / `crypto.getRandomValues` (none in `src/sim/` — verified by grep)
+- Module-level mutable state in behavior files (none)
+- Map/Set iteration order (no `Object.entries` / `[...map]` / `[...set]` in behavior code)
+- PRNG state pollution at module load (no rng calls at module scope; behaviors only register handlers)
+- Worker reuse across runs (`SimDebugPage` calls `terminate()` before `new SimWorker()`)
+- Behavior-emitted events containing live mutable references (all payloads are fresh object literals with primitive values)
+- structuredClone altering events (roundtrip test passes)
+- Per-node rng lazy initialization (test confirms identical sequences)
+
+**My honest read**: the engine is deterministic. The earlier fix (sort by `(at, id)` + include `id` in the digest key) addressed the actual digest-function bug. If the browser still shows different digests after that fix, the most likely explanation is a **stale worker bundle**. Vite's HMR for `?worker` modules is sometimes flaky — the browser holds onto an older worker bundle that still has the pre-fix digest function or pre-fix engine code. **Hard-refresh** (Cmd+Shift+R) AND **restart the dev server** (kill + `npm run dev`) to fully invalidate.
+
+**Diagnostic added**: `SimDebugPage`'s `onComplete` now logs the first 10 + last 10 events in priority-queue order and stashes the full event list on `window.__lastEvents`. After a hard refresh + dev-server restart, run twice with seed=42 and compare:
+
+```js
+copy(JSON.stringify(window.__lastEvents))   // run 1
+// (run again)
+copy(JSON.stringify(window.__lastEvents))   // run 2 — diff against run 1
+```
+
+If they're identical → digest will match (the test suite already confirms this in Node).
+If they differ → the diff is the smoking gun. The first divergent line tells us exactly what's breaking. Send it.
+
+**Regression test**: `src/sim/__tests__/determinism.test.ts`, runs via `npm test`. Catches any future engine-side determinism regression.
+
 ### Bug fix — determinism digest drifted between identical runs
 
 **Symptom**: Three runs with seed 42 / 5000 ms / 10 RPS / `client → cache(hit_rate=0) → DB` produced identical metrics (arrived 50, completed 50, p50 8.4 ms, p99 12.0 ms) but **three different digests**.
