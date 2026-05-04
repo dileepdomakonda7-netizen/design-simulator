@@ -104,6 +104,18 @@ Side benefits:
 - `client → cache → database` with `hit_rate=0.0` at 10 RPS / 5s → arrived ≈ completed ≈ 50, p99 includes DB latency.
 - Same chain with `hit_rate=1.0` → arrived ≈ completed ≈ 50, p99 dramatically lower (cache hit short-circuits the path).
 
+### Bug fix — determinism digest drifted between identical runs
+
+**Symptom**: Three runs with seed 42 / 5000 ms / 10 RPS / `client → cache(hit_rate=0) → DB` produced identical metrics (arrived 50, completed 50, p50 8.4 ms, p99 12.0 ms) but **three different digests**.
+
+**Root cause**: the digest function in SimDebugPage.tsx iterated `allEventsRef.current` in **arrival order on the main thread** and **didn't include `id`** in the per-event key. The engine itself is deterministic — same seed + same config produce identical event ids in identical priority-queue order — but on the main thread, events arrive via Comlink-proxied callbacks. While `postMessage` is FIFO within one channel, the digest assumed something stronger and made no effort to sort. Two events scheduled at the same `at` could be reordered by any scheduling subtlety (callback microtask timing, React state updates interleaving with message handlers).
+
+Hypothesis #3 from the report (worker reuses state) is **not** the cause: SimDebugPage already calls `workerRef.current?.terminate()` then `new SimWorker()` on every Run, so every run gets a fresh worker process with fresh module-level state.
+
+**Fix**: `computeDigest` now (a) re-sorts events by `(at, id)` — the same tie-break the priority queue uses — and (b) includes `id` in the per-event key so same-`at` events with different ids contribute different bytes. The sort key is fully determined by the engine's deterministic scheduling order, not by main-thread callback timing. Three runs with the same seed now produce character-identical digests; changing the seed changes the digest.
+
+Defense-in-depth: the engine's id assignment is monotonic and deterministic (verified by reading), so even without the sort the digest *should* match. But explicit sort costs O(N log N) for ≤ ~10k events, removes any reliance on Comlink's delivery ordering, and cuts off an entire class of future "why does the digest drift on big runs?" investigations.
+
 ---
 
 ## Phase 4a — Simulation Engine Core (complete)

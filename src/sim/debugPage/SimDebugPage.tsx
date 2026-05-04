@@ -47,9 +47,28 @@ function cyrb53(str: string, seed = 0): number {
   return 4294967296 * (2097151 & h2) + (h1 >>> 0)
 }
 
+/**
+ * Determinism digest of an entire run's event stream.
+ *
+ * The events arrive on the main thread via Comlink-proxied callbacks.
+ * postMessage is FIFO within one channel, but defending against any future
+ * scheduling drift (Comlink batching, React concurrent rendering interleaving
+ * with message handlers, etc.) we re-sort here by the SAME tie-break the
+ * priority queue uses: (at, id). The engine assigns `id` monotonically as it
+ * schedules events, so the sort-key is fully determined by the engine's
+ * scheduling order — independent of the order callbacks happened to fire on
+ * the main thread.
+ *
+ * `id` is also included in the per-event key so two events with the same
+ * (at, kind, nodeId, requestId) but different ids contribute different bytes
+ * to the hash. Without this, any two same-`at` events would collide.
+ */
 function computeDigest(events: readonly SimEvent[]): string {
-  const serial = events
-    .map((e) => `${e.at}:${e.kind}:${e.nodeId ?? ''}:${e.requestId ?? ''}`)
+  const sorted = [...events].sort((a, b) => a.at - b.at || a.id - b.id)
+  const serial = sorted
+    .map(
+      (e) => `${e.at}:${e.id}:${e.kind}:${e.nodeId ?? ''}:${e.requestId ?? ''}`,
+    )
     .join('|')
   return cyrb53(serial).toString(16)
 }
