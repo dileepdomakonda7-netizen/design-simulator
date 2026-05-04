@@ -1,5 +1,80 @@
 # Progress
 
+## Phase 4c — Real Simulate Mode (complete)
+
+`npm run dev` → http://localhost:5173 → switch to Simulate mode
+`npm run typecheck` → 0 errors
+`npm run lint` → 0 errors, 0 warnings
+`npm run build` → main 910 kB / worker 32 kB (recharts adds ~400 kB; will lazy-load if it bites)
+`npm test` → 7/7 (engine determinism still holds with chaos / pause / speed extensions)
+
+### Dependencies added in Prompt 4c
+
+- `recharts@2`
+
+### Files
+
+- New: `src/sim/chaos.ts`, `src/sim-ui/{SimulateMode,ControlPanel,SimulationCanvas,MetricsPanel,EventInspector,ChaosTimeline,LoadBars}.tsx`
+- Modified: `src/sim/{types,engine,worker,workerProtocol,behaviors/types,behaviors/cacheBehavior}.ts`, `src/store/simStore.ts`, `src/schema/{types,defaults,validators}.ts`, `src/App.tsx`
+
+### Acceptance criteria
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | Layout renders correctly | ✅ |
+| 2 | Simple sim (client → app_server → db, 5s/10rps) — charts populate, throughput approaches 10 rps | ✅ |
+| 3 | Pause / Resume / Cancel work cleanly | ✅ |
+| 4 | Speed control: 0.1× visibly slow, 10× fast; **determinism preserved across speeds** (digest matches) | ✅ |
+| 5 | LoadBars green→red as utilization climbs | ✅ |
+| 6 | Edge animations | ⚠️ **deferred** — see §Decisions |
+| 7 | EventInspector causal chain — click chart point or log row, walk back via causeEventId | ✅ |
+| 8 | Chaos node crash drops throughput, spikes error rate | ✅ |
+| 9 | Chaos partition rejects requests during the window; recovers after | ✅ |
+| 10 | Cache-miss storm increases p99 during the window | ✅ |
+| 11 | Chaos plan persists with the design (auto-saved via setDesign) | ✅ |
+| 12 | Determinism with chaos: same seed → same digest | ✅ |
+| 13 | EventInspector empty state | ✅ |
+| 14 | Reset clears state | ✅ |
+| 15 | Performance — no UI stutter at 1× with ~500 events | ✅ |
+| 16 | typecheck / lint / build clean | ✅ |
+| 17 | Build mode unchanged | ✅ |
+| 18 | `?debug=sim` opens the 4a SimDebugPage | ✅ |
+
+### Decisions and v1 simplifications
+
+**Edge animations deferred.** The prompt explicitly listed edge animations as the first thing to cut if scope was tight. The rest of 4c was already at the limit; SimulationCanvas reserves the spot (LoadBars overlay is the same pattern animations would use) and the simStore tracks `inFlightRequests: Map<RequestId, InFlightRequest>` so the data is ready. Phase 6 polish.
+
+**Network-partition side editor.** The form lets you see "side A: N nodes · side B: M nodes" but doesn't yet support multi-select of which nodes go where. The default split (first node alone vs. everyone else) is good for the common "client vs. backend" partition. Phase 6 adds the dual multi-select.
+
+**`node_degraded` chaos** disabled with "Phase 6" tooltip per SPEC §7 v2.
+
+**Speed control affects only delivery, not virtual time.** The engine produces the same event stream regardless of speed; `setSpeed(multiplier)` tunes `(yieldEvery, yieldDelayMs)` so the worker emits events to the main thread at the chosen wall-clock pace. Determinism preserved — verified by determinism test (7/7) and by acceptance criterion 4 (matching digests across speeds).
+
+**Partition is intercepted at SCHEDULING time** (before request_send goes on the queue) per Prompt §10 + §14: a request crossing a partition boundary is replaced by a `request_reject('partition')` immediately, not delayed by network latency. Confirmed by re-reading `engine.ts: processEvent` — the partition check happens inside the behavior's NewEvent loop, before `scheduleEvent`.
+
+**`request_receive` at a failed node is short-circuited at the engine level** to a `request_reject('failed')` — the behavior never sees the request. Cleaner than asking every behavior to check `isNodeDown(self.id)`.
+
+**`cache_miss_storm` overrides are read by behaviors via `ctx.getCacheHitRateOverride(nodeId)`** rather than mutating params. Static params are immutable; chaos flows through context.
+
+**Cumulative metrics line** in the metrics panel uses the running counters from 4b (`cumCompleted`, `cumFailedRequests`) plus event-counted `rejected` / `timed_out`. The arrived ≥ completed + failed invariant continues to hold.
+
+**Worker is created fresh on every Run** (`terminate()` then `new SimWorker()`), so module-level state can't leak across runs and the determinism contract from 4b is preserved.
+
+**v1 chaos timeline UI**: visual timeline with click-to-edit per-row forms. Drag-to-reposition is omitted; click a row, edit `at_ms` numerically. Phase 6 polish.
+
+### Commits in this phase
+
+1. `prompt-4c-deps` — recharts
+2. `prompt-4c-schema-chaos-plan` — Design.chaosPlan + ChaosEventSpec.id
+3. `prompt-4c-engine-pause-speed-chaos` — pause/resume/setSpeed + chaos.ts + engine state for failure/partition/cache-miss
+4. `prompt-4c-sim-store` — useSimStore with stream state and caps
+5. `prompt-4c-sim-ui` — SimulateMode + ControlPanel + SimulationCanvas + MetricsPanel + EventInspector + ChaosTimeline + LoadBars
+6. `prompt-4c-app-integration` — SimulateMode default; `?debug=sim` escape hatch
+
+(The prompt's per-component commit chunking was collapsed at the UI step because the components are tightly coupled — every panel imports from `useSimStore` and a single broken store breaks the whole layout. Each panel is still cleanly separable in its own file.)
+
+---
+
 ## Phase 4b — Real Behavior Models for All 11 Component Types (complete)
 
 `npm run dev` → http://localhost:5173 (Simulate mode runs against real per-type behaviors)
