@@ -148,10 +148,60 @@ export function compileChaosPlan(
         }
         break
       }
+      case 'saturate_node': {
+        // Phase 6a: drive a target node to saturation. Emit synthetic
+        // request_receive events directly at the target — no upstream chain.
+        // The engine auto-creates a SimRequest from each receive (originNodeId
+        // is the target itself; path = [target]). Behavior processes them
+        // normally; on completion, forwardResponseUpstream returns [] (origin),
+        // so no further events. Burst size scales with capacity.
+        const target = design.nodes.find((n) => n.id === spec.node_id)
+        if (!target) break
+        const cap = saturateCapacityOf(target)
+        const totalExtras = Math.max(0, cap * 5)
+        const effectiveDurationMs = clampEnd(spec.at_ms, spec.duration_ms) - spec.at_ms
+        if (totalExtras > 0 && effectiveDurationMs > 0) {
+          const interval = effectiveDurationMs / totalExtras
+          for (let i = 0; i < totalExtras; i++) {
+            const t = spec.at_ms + interval * (i + 0.5)
+            const requestId: RequestId = `req-${nextRequestNumber++}-sat`
+            events.push({
+              id: nextEventId++,
+              at: t,
+              kind: 'request_receive',
+              nodeId: spec.node_id,
+              requestId,
+              payload: { fromNodeId: spec.node_id, networkLatencyMs: 0, saturate: true },
+            })
+          }
+        }
+        break
+      }
     }
   }
 
   return { events, nextEventId, nextRequestNumber }
+}
+
+/** Per-type capacity for saturate_node burst sizing. */
+function saturateCapacityOf(node: import('@/schema/types').Node): number {
+  switch (node.type) {
+    case 'app_server':
+      return node.params.instances * node.params.max_concurrent_per_instance
+    case 'database':
+      return node.params.read_capacity_rps
+    case 'queue':
+      return node.params.max_depth > 0 ? node.params.max_depth : 100
+    case 'cache':
+    case 'cdn':
+    case 'load_balancer':
+    case 'api_gateway':
+    case 'pub_sub':
+    case 'object_storage':
+    case 'external_service':
+    case 'client':
+      return 50
+  }
 }
 
 /** Best-effort baseline RPS from a load shape — used only for traffic-spike sizing. */
