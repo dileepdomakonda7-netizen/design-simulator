@@ -1,0 +1,196 @@
+import type { Edge } from '@/schema/types'
+import { sampleEdgeLatency } from '../latency'
+import type { BehaviorContext, NewEvent } from './types'
+
+// ─── Forward and reverse helpers ─────────────────────────────────────────────
+
+/**
+ * Emit a request_send + request_receive pair to forward the current request
+ * over `edge`. Network latency sampled once and used for both events.
+ *
+ * Use `newRequestId` to MINT a new request lifecycle (e.g., queue tick →
+ * consumer; pub/sub → subscriber). The engine notices the new request id
+ * on processEvent and creates the matching SimRequest record.
+ */
+export function forwardRequest(
+  ctx: BehaviorContext,
+  edge: Edge,
+  options?: { atOffset?: number; newRequestId?: string },
+): NewEvent[] {
+  const requestId = options?.newRequestId ?? ctx.request?.id
+  if (!requestId) return []
+  const sendAt = ctx.now + (options?.atOffset ?? 0)
+  const latency = sampleEdgeLatency(edge, ctx.rng)
+  const receiveAt = sendAt + latency
+  return [
+    {
+      at: sendAt,
+      kind: 'request_send',
+      nodeId: ctx.node.id,
+      edgeId: edge.id,
+      requestId,
+      payload: { toNodeId: edge.target, networkLatencyMs: latency },
+    },
+    {
+      at: receiveAt,
+      kind: 'request_receive',
+      nodeId: edge.target,
+      edgeId: edge.id,
+      requestId,
+      payload: { fromNodeId: ctx.node.id, networkLatencyMs: latency },
+    },
+  ]
+}
+
+/**
+ * Emit a request_response toward the previous hop on the request's path.
+ * If this node is the originator (or the request has no upstream hop),
+ * returns [] — the response chain ends here and the engine drops the
+ * request from in-flight tracking on origin arrival.
+ */
+export function forwardResponseUpstream(
+  ctx: BehaviorContext,
+  success: boolean,
+): NewEvent[] {
+  const request = ctx.request
+  if (!request) return []
+  const myIndex = request.path.indexOf(ctx.node.id)
+  if (myIndex <= 0) return [] // origin or off-path; finalize here
+  const previousNodeId = request.path[myIndex - 1]
+  if (!previousNodeId) return []
+  const reverseEdge = ctx.incoming.find((e) => e.source === previousNodeId)
+  const latency = reverseEdge ? sampleEdgeLatency(reverseEdge, ctx.rng) : 0
+  return [
+    {
+      at: ctx.now + latency,
+      kind: 'request_response',
+      nodeId: previousNodeId,
+      ...(reverseEdge ? { edgeId: reverseEdge.id } : {}),
+      requestId: request.id,
+      payload: {
+        toNodeId: previousNodeId,
+        fromNodeId: ctx.node.id,
+        success,
+        durationMs: ctx.now - request.arrivedAt,
+      },
+    },
+  ]
+}
+
+/** Emit a local request_reject at the current node with the given reason. */
+export function rejectHere(
+  ctx: BehaviorContext,
+  reason: 'capacity' | 'partition' | 'circuit_open' | 'failed',
+): NewEvent[] {
+  if (!ctx.request) return []
+  return [
+    {
+      at: ctx.now,
+      kind: 'request_reject',
+      nodeId: ctx.node.id,
+      requestId: ctx.request.id,
+      payload: { reason },
+    },
+  ]
+}
+
+// ─── Timeout-guard pattern ───────────────────────────────────────────────────
+//
+// Pattern (used by client / api_gateway / cdn / external_service):
+//
+//   1. When sending forward, schedule a request_timeout at now + timeout_ms
+//      AT the source node. Add request id to nodeState['awaiting'].
+//   2. When the response arrives, remove from `awaiting`.
+//   3. When the timeout event fires later, check if request id is still
+//      in `awaiting`. If yes — real timeout, forward failure upstream. If
+//      no — response already came; ignore.
+
+function getAwaiting(state: Record<string, unknown>): Set<string> {
+  let s = state['awaiting'] as Set<string> | undefined
+  if (!s) {
+    s = new Set<string>()
+    state['awaiting'] = s
+  }
+  return s
+}
+
+export function scheduleTimeoutGuard(
+  sourceNodeId: string,
+  requestId: string,
+  timeoutMs: number,
+  now: number,
+  state: Record<string, unknown>,
+): NewEvent {
+  getAwaiting(state).add(requestId)
+  return {
+    at: now + timeoutMs,
+    kind: 'request_timeout',
+    nodeId: sourceNodeId,
+    requestId,
+    payload: { atNodeId: sourceNodeId, timeoutMs },
+  }
+}
+
+/**
+ * Returns true iff the request was still being awaited (not yet timed out
+ * by the response arrival). Behaviors call this on response arrival to
+ * suppress a later spurious timeout, AND on timeout fire to gate "real
+ * timeout" vs "response already came" handling.
+ */
+export function clearTimeoutGuard(
+  requestId: string,
+  state: Record<string, unknown>,
+): boolean {
+  const s = state['awaiting'] as Set<string> | undefined
+  if (!s) return false
+  return s.delete(requestId)
+}
+
+// ─── Retry pattern (4b: client + load_balancer only) ─────────────────────────
+//
+// Called when the SOURCE of an outgoing request_send observes a failure
+// response from downstream. Either reschedules a retry along `edge`, or
+// returns null to indicate "give up; forward failure upstream."
+//
+// `attempt` is the 0-indexed retry counter. We mirror it on the SimRequest
+// for visibility in the event log.
+
+export interface RetryDecision {
+  /** Events to schedule (a fresh request_send + request_receive) for the retry. */
+  events: NewEvent[]
+}
+
+export function planRetry(
+  ctx: BehaviorContext,
+  edge: Edge,
+  attempt: number,
+): RetryDecision | null {
+  const policy = edge.params.retry_policy
+  if (policy.kind === 'none') return null
+
+  // Treat policy.max_retries as max ADDITIONAL attempts beyond the initial.
+  // attempt=0 → first retry uses delay; attempt=max_retries-1 → last retry.
+  if (attempt >= policy.max_retries) return null
+
+  let delay = 0
+  if (policy.kind === 'fixed') {
+    delay = policy.delay_ms
+  } else {
+    // exponential_backoff
+    delay = policy.base_delay_ms * Math.pow(2, attempt)
+    if (delay > policy.max_delay_ms) delay = policy.max_delay_ms
+    if (policy.jitter) delay = delay * (0.5 + ctx.rng() * 0.5)
+  }
+  // Bump request.attempt so subsequent failures see incremented count.
+  if (ctx.request) ctx.request.attempt = attempt + 1
+  const retryEvent: NewEvent = {
+    at: ctx.now,
+    kind: 'request_retry',
+    nodeId: ctx.node.id,
+    payload: { attempt: attempt + 1 },
+    ...(ctx.request ? { requestId: ctx.request.id } : {}),
+  }
+  return {
+    events: [retryEvent, ...forwardRequest(ctx, edge, { atOffset: delay })],
+  }
+}
