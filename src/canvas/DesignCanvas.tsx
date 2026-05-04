@@ -6,7 +6,6 @@ import {
   BackgroundVariant,
   Controls,
   MiniMap,
-  Panel,
   useReactFlow,
   useNodesState,
   useEdgesState,
@@ -20,9 +19,13 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import { useDesignStore } from '@/store/designStore'
+import { useUIStore } from '@/store/uiStore'
 import { createDefaultEdge, createDefaultNode } from '@/schema/defaults'
-import type { ComponentType, Node, Edge } from '@/schema/types'
+import { COMPONENT_TYPES, type ComponentType, type Node, type Edge } from '@/schema/types'
 import { toRFNode, toRFEdge } from './adapters'
+import { Palette, PALETTE_DRAG_MIME } from './Palette'
+import { Inspector } from './Inspector'
+import { AnnotationLayer } from './AnnotationLayer'
 
 import { ClientNode } from './nodes/ClientNode'
 import { LoadBalancerNode } from './nodes/LoadBalancerNode'
@@ -40,8 +43,6 @@ import { SketchyEdge } from './edges/SketchyEdge'
 type RFSchemaNode = RFNode<{ schemaNode: Node }>
 type RFSchemaEdge = RFEdge<{ schemaEdge: Edge }>
 
-// Sanity check: every ComponentType must have a matching nodeTypes entry,
-// or React Flow falls back to its default renderer for the missing type.
 const nodeTypes = {
   client: ClientNode,
   load_balancer: LoadBalancerNode,
@@ -58,20 +59,7 @@ const nodeTypes = {
 
 const edgeTypes = { sketchy: SketchyEdge }
 
-const ALL_COMPONENT_TYPES: ComponentType[] = [
-  'client',
-  'load_balancer',
-  'api_gateway',
-  'app_server',
-  'cache',
-  'database',
-  'queue',
-  'pub_sub',
-  'cdn',
-  'object_storage',
-  'external_service',
-]
-for (const t of ALL_COMPONENT_TYPES) {
+for (const t of COMPONENT_TYPES) {
   if (!(t in nodeTypes)) throw new Error(`DesignCanvas: missing nodeTypes entry for "${t}"`)
 }
 
@@ -95,17 +83,16 @@ function DesignCanvasInner() {
 
   const updateNodePosition = useDesignStore((s) => s.updateNodePosition)
   const removeNode = useDesignStore((s) => s.removeNode)
+  const addNode = useDesignStore((s) => s.addNode)
   const addEdge = useDesignStore((s) => s.addEdge)
   const removeEdge = useDesignStore((s) => s.removeEdge)
   const updateViewport = useDesignStore((s) => s.updateViewport)
 
+  const penTool = useUIStore((s) => s.penTool)
+  const penOff = penTool === 'off'
+
   const reactFlow = useReactFlow()
 
-  // React Flow manages its own state (selection, dragging, dimensions, interim
-  // drag positions). The store remains the source of truth for design content;
-  // we sync FROM store TO React Flow on schema changes (see useEffect below)
-  // and FROM React Flow TO store on drag-end position / remove changes (see
-  // wrapped onNodesChange / onEdgesChange).
   const [rfNodes, setRfNodes, onNodesChangeInternal] = useNodesState<RFSchemaNode>(
     schemaNodes.map(toRFNode),
   )
@@ -113,11 +100,8 @@ function DesignCanvasInner() {
     schemaEdges.map(toRFEdge),
   )
 
-  // Sync schema → React Flow when the store changes (undo/redo, load, debug add,
-  // drag-end persist). Reference-equality merge: nodes whose schema reference is
-  // unchanged keep their old RF entry verbatim, preserving `selected` and
-  // `dragging` flags. Only changed/new nodes get a fresh toRFNode result, and
-  // even those carry over `selected` from the prior RF entry.
+  // Sync schema → React Flow when the store changes (undo/redo, load, drop, etc.)
+  // Reference-equality merge preserves selected/dragging on unchanged nodes.
   useEffect(() => {
     setRfNodes((prev) => {
       const prevById = new Map(prev.map((n) => [n.id, n]))
@@ -146,15 +130,13 @@ function DesignCanvasInner() {
     })
   }, [schemaEdges, setRfEdges])
 
-  // When the active design changes (e.g. via load dialog), restore its viewport.
-  // Deliberately not dependent on `viewport` itself — that would fight live
-  // pan/zoom by snapping back to the persisted value mid-gesture.
+  // Restore viewport on design change.
   useEffect(() => {
     reactFlow.setViewport(viewport)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [designId])
 
-  // Debounced viewport persist (250ms idle window after last pan/zoom).
+  // Debounced viewport persist (250ms idle window).
   const vpTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onMove = useCallback(
     (_e: unknown, vp: RFViewport) => {
@@ -164,10 +146,6 @@ function DesignCanvasInner() {
     [updateViewport],
   )
 
-  // CRITICAL: forward all changes to React Flow's internal state FIRST so
-  // selection / dimensions / interim positions update; THEN extract the changes
-  // we want to persist (drag-end position, remove). Dropping any change type
-  // (as the prior controlled-mode implementation did) breaks selection.
   const onNodesChange = useCallback(
     (changes: NodeChange<RFSchemaNode>[]) => {
       onNodesChangeInternal(changes)
@@ -193,8 +171,6 @@ function DesignCanvasInner() {
   )
 
   // TODO(prompt-7-or-later): topology validation lives at simulation start.
-  // The canvas accepts any source→target connection; the simulator rejects
-  // impossible topologies (client→client, dangling DB, etc.) at run time.
   const onConnect = useCallback(
     (conn: Connection) => {
       if (conn.source && conn.target) {
@@ -204,8 +180,33 @@ function DesignCanvasInner() {
     [addEdge],
   )
 
+  // ─── Palette drop handlers (HTML5 drag-and-drop) ────────────────────────────
+
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+  }, [])
+
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault()
+      const raw = event.dataTransfer.getData(PALETTE_DRAG_MIME)
+      if (!raw) return
+      // Runtime safety net — only accept well-known component types.
+      const isComponentType = (s: string): s is ComponentType =>
+        (COMPONENT_TYPES as readonly string[]).includes(s)
+      if (!isComponentType(raw)) return
+      const position = reactFlow.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      })
+      addNode(createDefaultNode(raw, position))
+    },
+    [reactFlow, addNode],
+  )
+
   return (
-    <div className="w-full h-full relative">
+    <div className="w-full h-full relative" onDragOver={onDragOver} onDrop={onDrop}>
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
@@ -219,51 +220,26 @@ function DesignCanvasInner() {
         deleteKeyCode={['Backspace', 'Delete']}
         minZoom={0.2}
         maxZoom={2.5}
-        nodesDraggable
-        nodesConnectable
-        elementsSelectable
+        // Pen mode disables canvas/node/edge interaction; zoom-on-scroll stays
+        // on so the user can still adjust where their strokes land.
+        panOnDrag={penOff}
+        nodesDraggable={penOff}
+        nodesConnectable={penOff}
+        elementsSelectable={penOff}
+        zoomOnScroll
         selectNodesOnDrag={false}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#d4d4d8" />
         <Controls showInteractive={false} />
         <MiniMap pannable zoomable nodeColor={() => '#a3a3a3'} maskColor="rgba(0,0,0,0.06)" />
-        <DebugAddNodes />
       </ReactFlow>
+
+      {/* Annotation layer renders ABOVE the graph but its pointer-events flip
+          based on penTool — when off, clicks pass through to React Flow. */}
+      <AnnotationLayer />
+
+      <Palette />
+      <Inspector />
     </div>
-  )
-}
-
-// ─── Floating debug panel — replaced by real palette in Prompt 3b ─────────────
-
-function DebugAddNodes() {
-  const addNode = useDesignStore((s) => s.addNode)
-  const nodeCount = useDesignStore((s) => s.design.nodes.length)
-
-  const handleAdd = (type: ComponentType) => {
-    // Offset 40px per existing node so they don't stack
-    const offset = nodeCount * 40
-    addNode(createDefaultNode(type, { x: 80 + offset, y: 80 + offset }))
-  }
-
-  return (
-    <Panel
-      position="top-left"
-      className="!m-2 bg-white/95 backdrop-blur rounded-lg border border-neutral-200 shadow-sm p-2 max-w-[14rem]"
-    >
-      <div className="text-[10px] uppercase tracking-wide text-neutral-400 mb-1.5 px-1">
-        Debug · add node
-      </div>
-      <div className="grid grid-cols-2 gap-1">
-        {ALL_COMPONENT_TYPES.map((t) => (
-          <button
-            key={t}
-            onClick={() => handleAdd(t)}
-            className="text-[11px] px-1.5 py-1 rounded bg-neutral-900 text-white hover:bg-neutral-700 truncate"
-          >
-            {t.replace(/_/g, ' ')}
-          </button>
-        ))}
-      </div>
-    </Panel>
   )
 }

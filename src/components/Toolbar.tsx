@@ -1,12 +1,15 @@
 import { ModeToggle } from './ModeToggle'
 import { DesignNameEditor } from './DesignNameEditor'
 import { FileMenu } from './FileMenu'
+import { PenToolGroup } from './PenToolGroup'
 import { useDesignTemporalStore } from '@/store/designStore'
+import { useModeStore } from '@/store/modeStore'
 
 export function Toolbar() {
   const { undo, redo, pastStates, futureStates } = useDesignTemporalStore()
   const canUndo = pastStates.length > 0
   const canRedo = futureStates.length > 0
+  const mode = useModeStore((s) => s.mode)
 
   const btnClass = (enabled: boolean) =>
     [
@@ -44,6 +47,13 @@ export function Toolbar() {
           ↪ Redo
         </button>
       </div>
+
+      {mode === 'build' && (
+        <>
+          <div className="h-5 w-px bg-gray-200" />
+          <PenToolGroup />
+        </>
+      )}
 
       <div className="ml-auto">
         <FileMenu />
