@@ -337,6 +337,88 @@ async function runUserScenarioWithChaos(
   return { events }
 }
 
+/**
+ * Phase 6a backpressure regression: bounded app_server queue under sustained
+ * overload must produce a deterministic event stream AND non-zero rejections.
+ */
+describe('phase 6a backpressure', () => {
+  function backpressureDesign(): Design {
+    const base = fixtureDesign()
+    // Override app_server with bounded queue.
+    const app = base.nodes.find((n) => n.id === 'app-1')!
+    if (app.type !== 'app_server') throw new Error('expected app_server')
+    app.params = {
+      ...app.params,
+      instances: 1,
+      max_concurrent_per_instance: 5,
+      queue_max_depth: 10,
+      rejection_policy: 'reject_newest',
+    }
+    return base
+  }
+
+  async function runOverload(seed: number): Promise<{ events: SimEvent[] }> {
+    const events: SimEvent[] = []
+    const config: SimRunConfig = {
+      design: backpressureDesign(),
+      traffic: [
+        {
+          id: 'src',
+          label: 'Overload',
+          target_node_id: 'client-1',
+          load_shape: { kind: 'constant', rps: 200 },
+        },
+      ],
+      chaos: [],
+      durationMs: 3000,
+      seed,
+      snapshotIntervalMs: 250,
+    }
+    const engine = new SimulationEngine(config, () => {}, (e) => events.push(e))
+    await engine.run()
+    return { events }
+  }
+
+  it('bounded app_server under overload: deterministic events + non-zero rejections', async () => {
+    const a = await runOverload(42)
+    const b = await runOverload(42)
+    expect(a.events).toEqual(b.events)
+    const rejects = a.events.filter((e) => e.kind === 'request_reject')
+    expect(rejects.length).toBeGreaterThan(0)
+    // Rejections at the app_server, not just at edges.
+    const appRejects = rejects.filter((e) => e.nodeId === 'app-1')
+    expect(appRejects.length).toBeGreaterThan(0)
+  })
+
+  it('different bounded queue depth → different digest', async () => {
+    const a = await runOverload(42)
+    // Now run with depth 5 instead of 10.
+    const events: SimEvent[] = []
+    const tighter = backpressureDesign()
+    const app = tighter.nodes.find((n) => n.id === 'app-1')!
+    if (app.type !== 'app_server') throw new Error('expected app_server')
+    app.params = { ...app.params, queue_max_depth: 5 }
+    const config: SimRunConfig = {
+      design: tighter,
+      traffic: [
+        {
+          id: 'src',
+          label: 'Overload',
+          target_node_id: 'client-1',
+          load_shape: { kind: 'constant', rps: 200 },
+        },
+      ],
+      chaos: [],
+      durationMs: 3000,
+      seed: 42,
+      snapshotIntervalMs: 250,
+    }
+    const engine = new SimulationEngine(config, () => {}, (e) => events.push(e))
+    await engine.run()
+    expect(computeDigest(a.events)).not.toBe(computeDigest(events))
+  })
+})
+
 function userScenarioDesign(): Design {
   const now = '2026-01-01T00:00:00.000Z'
   return {
