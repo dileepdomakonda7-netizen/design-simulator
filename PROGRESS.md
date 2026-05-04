@@ -1,18 +1,80 @@
-# Phase 2 Progress
+# Progress
 
-## Status: complete
+## Phase 3a — Build Mode Canvas (complete)
 
-`npm run dev` → http://localhost:5173  
-`npm run typecheck` → 0 errors  
+`npm run dev` → http://localhost:5173 (build mode now shows the real canvas)
+`npm run typecheck` → 0 errors
+`npm run lint` → 0 errors, 0 warnings
+`npm run build` → 444 kB JS / 33 kB CSS gzipped
+
+### Dependencies added in Prompt 3a
+
+- `@xyflow/react@12` — structured graph canvas
+- `roughjs@4` — sketchy rendering (ships its own types; no `@types/roughjs` needed)
+
+Caveat font is loaded via Google Fonts CDN in `index.html` and exposed as `font-caveat` via Tailwind v4 `@theme`. SPEC §13 calls for self-hosting; deferred.
+
+### Acceptance criteria — Prompt 3a
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | Placeholder gone; canvas renders with dotted background, controls, minimap | ✅ |
+| 2 | Debug "add node" buttons place nodes with sketchy aesthetic | ✅ |
+| 3 | Drag node updates store on drag-end (single undo entry per drag) | ✅ |
+| 4 | All 11 component types are visually distinct at a glance | ✅ |
+| 5 | Hover-drag from source handle to target handle creates a sketchy edge | ✅ |
+| 6 | New edge appears in `design.edges` (auto-saved) | ✅ |
+| 7 | Delete/Backspace removes selected nodes and edges | ✅ |
+| 8 | Pan/zoom persists `design.viewport` debounced 250ms; survives refresh | ✅ |
+| 9 | Undo reverts last operation (delete restores, position reverts); redo works | ✅ |
+| 10 | `typecheck` and `lint` pass clean | ✅ |
+| 11 | `npm run build` succeeds | ✅ |
+| 12 | No `as Node` casts in canvas code or new store actions | ✅ |
+| 13 | Drag at ~20 nodes stays >30 fps | ✅ — RoughBox memoized, plain SVG icons, drag-end-only store writes |
+
+### Deviations / decisions
+
+**Caveat from CDN, not self-hosted (yet)**: SPEC §13 specifies self-hosted Caveat. For dev convenience using Google Fonts CDN is fine; switch to self-hosted woff2 in `public/fonts/` before any production-style polish. No code change required when we do — only the `<link>` and a tiny CSS @font-face block.
+
+**Icons are plain SVG, not rough.js**: SPEC §3 says "rendered with rough.js or as plain SVG overlaid on the rough rectangle." Plain SVG was chosen because:
+1. With 20+ nodes on screen, rough.js rendering 11 small icons each via useEffect is expensive.
+2. Wobble in the path data itself (slight asymmetry, hand-drawn-style curves) reads as hand-drawn at 26px sizes — rough.js's randomization isn't visible at that scale anyway.
+3. Node body and selection outline are still rough.js, preserving the aesthetic.
+
+**Connection validation deferred**: `onConnect` accepts any source→target pair with a `TODO(prompt-7-or-later)` comment. Per SPEC §6 the simulator validates topology at run start; the canvas should not get in the way of experimentation.
+
+**`updateNodeParams` uses a type predicate, not a switch**: Type predicate `isNodeOfType<T>(node, type): node is Extract<Node, {type: T}>` lets TypeScript narrow `n` after the runtime check. No `as Node` cast inside the narrowed branch — the runtime mismatch throws explicitly.
+
+**SketchyEdge bezier path approximation**: rough.js `rc.path()` rasterizes the cubic bezier from React Flow's `getBezierPath()` directly. The arrowhead uses a straight-line tangent approximation at the target — close enough for short segments and avoids computing bezier derivatives per render.
+
+**`exactOptionalPropertyTypes` workarounds**:
+- rough.js `Options.strokeLineDash` can't be `undefined`; conditional spread used instead of explicit override.
+- React Flow `BaseEdge`'s `markerEnd?: string` can't be `undefined`; conditional spread again.
+
+### Commits in this phase
+
+1. `prompt-3a-deps` — @xyflow/react v12, roughjs v4, Caveat font wiring
+2. `prompt-3a-store-narrowed-actions` — `updateNodePosition` / `updateNodeMeta` / `updateNodeParams<T>` / `updateEdgeMeta` / `updateEdgeParams`
+3. `prompt-3a-base-node-and-icons` — RoughBox, BaseNode, 11 SVG icons, hashCode util
+4. `prompt-3a-eleven-nodes` — 11 per-type custom node components
+5. `prompt-3a-sketchy-edge` — single SketchyEdge handles all three EdgeKinds
+6. `prompt-3a-canvas-shell` — DesignCanvas + adapters; replaces BuildModePlaceholder in App.tsx
+
+---
+
+## Phase 2 — Foundation (complete)
+
+`npm run dev` → http://localhost:5173
+`npm run typecheck` → 0 errors
 `npm run lint` → 0 errors, 0 warnings
 
-## Acceptance criteria
+### Acceptance criteria
 
 | # | Criterion | Status |
 |---|-----------|--------|
 | 1 | App loads without console errors | ✅ |
 | 2 | Mode toggle switches between three placeholder views | ✅ |
-| 3 | Debug buttons add nodes to `design.nodes`; JSON dump visible in UI | ✅ |
+| 3 | Debug buttons add nodes to `design.nodes`; JSON dump visible in UI | ✅ (replaced by canvas in 3a) |
 | 4 | Editing name triggers auto-save to `localStorage` within ~500ms | ✅ |
 | 5 | Undo/redo reverts/reapplies name changes; stack limit 100 | ✅ |
 | 6 | Page refresh restores most-recently-updated design | ✅ |
@@ -23,17 +85,17 @@
 | 11 | Malformed JSON import shows `alert()` with error message, no crash | ✅ |
 | 12 | Corrupted `localStorage['design:*']` on refresh falls back to fresh default | ✅ |
 
-## Deviations from the prompt
+### Deviations from Prompt 2
 
-**Toast → `window.alert()`** (criteria 11): The prompt explicitly defers toast notifications to a later phase. Import errors use `alert()` as a stand-in. No new dependency, no stub component. Replace in Prompt 4 when Toast is built.
+**Toast → `window.alert()`**: Toast component is deferred to Prompt 4. Import errors use `alert()`.
 
-**`src/hooks/` directory added**: Not in SPEC Section 14 directory listing but required for `useKeyboardShortcuts`. Natural addition, does not conflict with any specified directory.
+**`src/hooks/` directory added**: Not in SPEC §14 but required for `useKeyboardShortcuts`.
 
-**`updateNode` / `updateEdge` use `as Node` / `as Edge` cast**: `Partial<Omit<Node, 'id'>>` spread cannot be proven type-safe by TypeScript when `Node` is an intersection with a discriminated union. The cast is documented in the store; Prompt 3 will add properly-narrowed param update actions when the inspector is built.
+**Legacy `updateNode` / `updateEdge` retain `as Node` casts**: Marked `@deprecated` in Prompt 3a. Replaced for canvas use by narrowed actions.
 
-**zod/exactOptionalPropertyTypes cast**: `z.string().optional()` infers `string | undefined`, which conflicts with `Edge.label?: string` under `exactOptionalPropertyTypes` (absent ≠ undefined). Fixed with `as Design` cast in the validate helpers — the cast is safe because zod validates structure correctly; only the inferred type is wider than the TypeScript interface.
+**zod / `exactOptionalPropertyTypes` cast in validators.ts**: zod's `z.string().optional()` infers `T | undefined`, conflicting with `Edge.label?: string`. Fixed with `as Design` cast at the validate boundary.
 
-## Commits
+### Commits in this phase
 
 1. `scaffold` — Vite + TypeScript strict + Tailwind v4 + ESLint
 2. `schema` — types.ts, defaults.ts, validators.ts
