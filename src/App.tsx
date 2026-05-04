@@ -6,6 +6,7 @@ import { listDesigns, loadDesignById } from '@/persistence/designStorage'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { DesignCanvas } from '@/canvas/DesignCanvas'
 import { SimDebugPage } from '@/sim/debugPage/SimDebugPage'
+import { SimulateMode } from '@/sim-ui/SimulateMode'
 
 // ─── Placeholder views (build replaced by DesignCanvas) ───────────────────────
 
@@ -43,13 +44,19 @@ export default function App() {
     }
   }, [])
 
+  // Hidden escape hatch for the 4a debug page (still useful for engine-level
+  // diagnostics). URL: /?debug=sim
+  const debug =
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('debug') : null
+  const useDebugSim = debug === 'sim'
+
   return (
     <div className="flex flex-col h-screen bg-gray-100">
       <Toolbar />
       <main className="flex-1 overflow-hidden">
         {mode === 'build' && <DesignCanvas />}
         {mode === 'sketch' && <SketchModePlaceholder />}
-        {mode === 'simulate' && <SimDebugPage />}
+        {mode === 'simulate' && (useDebugSim ? <SimDebugPage /> : <SimulateMode />)}
       </main>
     </div>
   )
