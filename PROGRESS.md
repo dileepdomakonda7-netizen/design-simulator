@@ -51,6 +51,21 @@
 7. `prompt-4a-worker` — Comlink-exposed SimulationWorkerApi
 8. `prompt-4a-debug-page` — SimDebugPage replaces SimulateModePlaceholder
 9. `prompt-4a-echo-behavior` — trivial echo behavior used only by the debug page
+10. `fix-4a-debug-controls-and-digest` — see "Follow-up" below
+
+### Follow-up — debug controls and determinism digest
+
+Added to `SimDebugPage`:
+
+- **Number inputs in the header** for `seed` / `duration (ms)` / `rps`, defaulting to 42 / 5000 / 10. Disabled while a run is in flight; positive integers only (rejects on parse).
+- **Determinism digest** computed at the end of every run. cyrb53 53-bit hash of `events.map(e => `${at}:${kind}:${nodeId}:${requestId}`).join('|')` — a 13-hex-char fingerprint that changes on any timing or routing divergence. Surfaced three ways:
+  - `console.log('digest:', d, '(events: N)')` for terminal-style verification
+  - `window.__lastDigest = d` so the user can poke at it from DevTools or a script
+  - Visible in the toolbar header next to the inputs, `select-all` so it copy-pastes cleanly
+
+Implementation note: events accumulate into a `useRef<SimEvent[]>` during the run rather than React state, so the per-event re-render path stays minimal and the digest is computed once on `onComplete` against the full log.
+
+Use it: run with seed 42, copy the digest, run again with seed 42 — digests should be identical character-for-character. Change seed to 99 → digest changes. Change rps from 10 to 11 → digest changes.
 
 ### Re-reading the engine main loop (per Prompt §16)
 

@@ -12,9 +12,9 @@ import type {
 import type { SimulationWorkerApi } from '@/sim/workerProtocol'
 import { EventLogTable } from './eventLogTable'
 
-const HARDCODED_SEED = 42
-const HARDCODED_DURATION_MS = 5_000
-const HARDCODED_RPS = 10
+const DEFAULT_SEED = 42
+const DEFAULT_DURATION_MS = 5_000
+const DEFAULT_RPS = 10
 const MAX_EVENTS_DISPLAYED = 200
 
 interface Counters {
@@ -29,11 +29,36 @@ function defaultCounters(): Counters {
 }
 
 /**
- * Build a SimRunConfig from the currently-loaded design.
- * Returns null if the design has no client node connected to a downstream node.
+ * cyrb53 — fast 53-bit string hash, sufficient for run-to-run determinism digests.
+ * Reference: https://stackoverflow.com/a/52171480
  */
+function cyrb53(str: string, seed = 0): number {
+  let h1 = 0xdeadbeef ^ seed
+  let h2 = 0x41c6ce57 ^ seed
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i)
+    h1 = Math.imul(h1 ^ ch, 2654435761)
+    h2 = Math.imul(h2 ^ ch, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507)
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507)
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0)
+}
+
+function computeDigest(events: readonly SimEvent[]): string {
+  const serial = events
+    .map((e) => `${e.at}:${e.kind}:${e.nodeId ?? ''}:${e.requestId ?? ''}`)
+    .join('|')
+  return cyrb53(serial).toString(16)
+}
+
 function buildConfig(
   design: ReturnType<typeof useDesignStore.getState>['design'],
+  seed: number,
+  durationMs: number,
+  rps: number,
 ): SimRunConfig | null {
   const client = design.nodes.find((n) => n.type === 'client')
   if (!client) return null
@@ -45,7 +70,7 @@ function buildConfig(
       id: 'debug-source',
       label: 'Debug',
       target_node_id: client.id,
-      load_shape: { kind: 'constant', rps: HARDCODED_RPS },
+      load_shape: { kind: 'constant', rps },
     },
   ]
 
@@ -53,25 +78,33 @@ function buildConfig(
     design,
     traffic,
     chaos: [],
-    durationMs: HARDCODED_DURATION_MS,
-    seed: HARDCODED_SEED,
+    durationMs,
+    seed,
     snapshotIntervalMs: 250,
   }
 }
 
 export function SimDebugPage() {
   const design = useDesignStore((s) => s.design)
+  const [seed, setSeed] = useState(DEFAULT_SEED)
+  const [durationMs, setDurationMs] = useState(DEFAULT_DURATION_MS)
+  const [rps, setRps] = useState(DEFAULT_RPS)
+
   const [running, setRunning] = useState(false)
   const [counters, setCounters] = useState<Counters>(defaultCounters)
   const [virtualTime, setVirtualTime] = useState(0)
   const [recentEvents, setRecentEvents] = useState<SimEvent[]>([])
   const [latestSnapshot, setLatestSnapshot] = useState<SimSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [digest, setDigest] = useState<string | null>(null)
+
+  // All events from the active run — used to compute the determinism digest at end.
+  // Kept in a ref (not state) to avoid React re-renders on every event append.
+  const allEventsRef = useRef<SimEvent[]>([])
 
   const workerRef = useRef<Worker | null>(null)
   const apiRef = useRef<Comlink.Remote<SimulationWorkerApi> | null>(null)
 
-  // Cleanup any worker on unmount.
   useEffect(() => {
     return () => {
       apiRef.current?.cancel()
@@ -81,7 +114,7 @@ export function SimDebugPage() {
     }
   }, [])
 
-  const config = buildConfig(design)
+  const config = buildConfig(design, seed, durationMs, rps)
 
   async function handleRun() {
     if (!config) return
@@ -90,9 +123,10 @@ export function SimDebugPage() {
     setRecentEvents([])
     setVirtualTime(0)
     setLatestSnapshot(null)
+    setDigest(null)
+    allEventsRef.current = []
     setRunning(true)
 
-    // Tear down any prior worker.
     apiRef.current?.cancel()
     workerRef.current?.terminate()
 
@@ -102,6 +136,7 @@ export function SimDebugPage() {
     apiRef.current = api
 
     const onEvent = (ev: SimEvent) => {
+      allEventsRef.current.push(ev)
       setVirtualTime(ev.at)
       setCounters((c) => ({
         events: c.events + 1,
@@ -112,7 +147,6 @@ export function SimDebugPage() {
           c.requestsFailed +
           (ev.kind === 'request_timeout' || ev.kind === 'request_reject' ? 1 : 0),
       }))
-      // Newest at the top; cap the displayed list.
       setRecentEvents((prev) => [ev, ...prev].slice(0, MAX_EVENTS_DISPLAYED))
     }
 
@@ -121,6 +155,10 @@ export function SimDebugPage() {
     }
 
     const onComplete = () => {
+      const d = computeDigest(allEventsRef.current)
+      ;(window as Window & { __lastDigest?: string }).__lastDigest = d
+      console.log('digest:', d, '(events:', allEventsRef.current.length + ')')
+      setDigest(d)
       setRunning(false)
     }
 
@@ -174,10 +212,36 @@ export function SimDebugPage() {
         >
           Cancel
         </button>
-        <div className="text-xs text-neutral-500 ml-2 font-mono">
-          seed={HARDCODED_SEED} duration={HARDCODED_DURATION_MS}ms rps={HARDCODED_RPS}
-        </div>
-        {error && <div className="text-xs text-red-600 ml-2">{error}</div>}
+
+        <NumberInput
+          label="seed"
+          value={seed}
+          onChange={setSeed}
+          disabled={running}
+          width={70}
+        />
+        <NumberInput
+          label="duration (ms)"
+          value={durationMs}
+          onChange={setDurationMs}
+          disabled={running}
+          width={90}
+        />
+        <NumberInput
+          label="rps"
+          value={rps}
+          onChange={setRps}
+          disabled={running}
+          width={60}
+        />
+
+        {digest && (
+          <div className="text-xs font-mono text-neutral-700 ml-2 truncate">
+            <span className="text-neutral-400 mr-1">digest</span>
+            <span className="select-all">{digest}</span>
+          </div>
+        )}
+        {error && <div className="text-xs text-red-600 ml-auto">{error}</div>}
       </div>
 
       {/* Counters */}
@@ -226,6 +290,39 @@ export function SimDebugPage() {
         )}
       </div>
     </div>
+  )
+}
+
+function NumberInput({
+  label,
+  value,
+  onChange,
+  disabled,
+  width,
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+  disabled: boolean
+  width: number
+}) {
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-neutral-500">
+      <span>{label}</span>
+      <input
+        type="number"
+        min={1}
+        step={1}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => {
+          const n = parseInt(e.target.value, 10)
+          if (Number.isFinite(n) && n > 0) onChange(n)
+        }}
+        style={{ width }}
+        className="border border-neutral-300 rounded px-1.5 py-0.5 text-xs font-mono tabular-nums text-neutral-800 disabled:bg-neutral-100 disabled:text-neutral-400"
+      />
+    </label>
   )
 }
 
