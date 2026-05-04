@@ -1,5 +1,93 @@
 # Progress
 
+## Phase 4b — Real Behavior Models for All 11 Component Types (complete)
+
+`npm run dev` → http://localhost:5173 (Simulate mode runs against real per-type behaviors)
+`npm run typecheck` → 0 errors
+`npm run lint` → 0 errors, 0 warnings
+`npm run build` → main 488 kB / worker bundle **27 kB** (up from 12.5 in 4a — real behaviors)
+
+### Dependencies added in Prompt 4b
+
+None.
+
+### Files
+
+- New: `src/sim/routing.ts`, `src/sim/latency.ts`, `src/sim/behaviors/shared.ts`
+- New: 11 behavior files in `src/sim/behaviors/` (one per ComponentType)
+- Deleted: `src/sim/behaviors/echoBehavior.ts`
+- Modified: `src/sim/engine.ts`, `src/sim/types.ts`, `src/sim/behaviors/types.ts`, `src/sim/worker.ts`
+
+### Acceptance criteria
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | echoBehavior.ts deleted; registry has 11 ComponentType keys, no 'echo' | ✅ |
+| 2 | client → app_server → database chain; ~50 requests at 10 RPS over 5s | ✅ |
+| 3 | Capacity matters: instances=1 × max_concurrent=5 at 200 RPS — queue grows, p99 climbs | ✅ |
+| 4 | Cache hit_rate matters: 0.0 → all reach DB; 1.0 → none reach DB | ✅ |
+| 5 | Round-robin distributes ~1/N to each backend over many requests | ✅ |
+| 6 | failure_rate=0.5 → error_rate ≈ 0.5 ± noise | ✅ |
+| 7 | retry_policy reduces error rate at the cost of higher p99 | ✅ |
+| 8 | Same seed → identical determinism digest | ✅ |
+| 9 | Edge network_latency dominates end-to-end latency when node latencies near 0 | ✅ |
+| 10 | Queue / pub_sub fire-and-forget — producer latency decoupled from consumer | ✅ |
+| 11 | Build mode unchanged (no regressions in palette / inspector / annotations) | ✅ |
+| 12 | typecheck / lint / build clean; zero new `as` casts in behavior bodies | ✅ |
+
+### v1 simplifications (each behavior's "annotate this" notes consolidated)
+
+These are stored in the schema and behaviors are written so they slot in cleanly when Phase 6 implements them — no schema or contract changes required:
+
+| Component | What's simplified in v1 |
+|---|---|
+| client | params.timeout_ms not enforced separately; per-edge / per-target timeouts cover the common case. params.retry_policy unused — retries are an EDGE concept in v1. |
+| load_balancer | max_connections and health_check_interval_ms stored, not enforced. No per-target health checking; failed targets get retried as if anyone could be next. |
+| api_gateway | (no significant simplifications) |
+| app_server | Queue is unbounded — no rejection on overflow. Phase 6 backpressure adds bounded queues + rejection policies via the existing Queue object boundary. |
+| cache | capacity_items / eviction_policy stored, not enforced. hit_rate is a fixed probability — cache does not populate itself on the response path. |
+| database | replicas / write_capacity_rps / write_latency_* / replication_mode / replication_lag_* / subtype stored, not used. All requests treated as reads (unless causalContext.kind === 'write', which no v1 behavior sets). read_capacity_rps used as a concurrent-in-flight cap (conflates rate with concurrency). |
+| queue | visibility_timeout_ms / delivery_guarantee stored, not enforced. Consumer side is a simple downstream forward. |
+| pub_sub | failure_rate is sampled at publish time only; per-subscriber delivery failures not modeled. If outgoing.length < subscriber_count, fan to all outgoing without failing. |
+| cdn | (no significant simplifications beyond cache's) |
+| object_storage | All requests treated as reads. Per-request size hardcoded to 1 KB (no schema field for byte size yet). |
+| external_service | (no significant simplifications) |
+
+### Decisions left to discretion in the prompt
+
+**Reverse path strategy: Choice B — one hop at a time.** Each upstream node has a `request_response` handler that forwards to the previous hop on `request.path`. Composes better with future features (LB latency tracking, cache fill on response, circuit-breaker success registration) than emitting the full reverse chain eagerly.
+
+**`queue_consumer_tick` added as a new SimEventKind.** Cleaner than overloading `request_dequeue` (which carries semantic meaning around request lifecycle). Tiny addition; documented in the kind union and the queue behavior's header.
+
+**`inFlightByNodeId`: increment on `request_receive`, decrement on `request_send` / `request_complete` / `request_reject` / `request_timeout`.** Not on `request_dequeue` (that would double-count for app_server, which both receives and dequeues). The metric is approximate — counts queued + processing for capacity-bound nodes — but that's the right metric for least-connections routing (loaded backends should look more loaded).
+
+**Persistent per-node rng** stored in `nodeState['__rng']`. Without this, `subStream` would produce a new closure each event dispatch and re-run the same sequence. Persistence makes log-normal latency samples actually distributed across requests.
+
+**Engine auto-creates `SimRequest` records on `request_send` for unknown ids.** This is how queue ticks and pub/sub fanouts mint new request lifecycles without behaviors directly mutating the engine's request map.
+
+**Engine OWNS path tracking** — appends to `request.path` on every `request_receive` at a new node. Behaviors don't manipulate path.
+
+**Retries restricted to client and load_balancer** per Prompt 4b §5. Other behaviors forward failures upstream. Phase 6 can extend.
+
+### Re-reading the engine and key behaviors (per Prompt §11)
+
+Did so. Notes:
+
+- `clientBehavior`: routing on arrival uses `defaultNextHop`. On response, finalization happens at the engine level (origin arrival drops the request from in-flight); the client behavior's only job on success is to clear the timeout guard. Failure path attempts a retry via `planRetry` against the same outgoing edge.
+- `appServerBehavior`: when at capacity, requests go into `nodeState['queue']` (a `string[]` of request ids). `request_complete` decrements `processing`, emits `request_response`, and shifts the next queued id off to start processing. Drain happens lazily on each completion — no active "wake the queue" event needed.
+- `queueBehavior`: producer's `request_response` is emitted INSIDE `onRequestReceive`, BEFORE the consumer-tick scheduling. So the producer's experienced latency is just the network latency (queue itself is "instant" from the producer's POV). The consumer tick is a self-targeted `queue_consumer_tick` event that fires later; it mints a NEW requestId and emits a normal `request_send` + `request_receive` pair across the first outgoing edge.
+- `apiGatewayBehavior`: rate-limit and timeout-guard patterns make sense — each is contained in its own primitive (sliding window via array shift; timeout via shared.ts helpers). No surprises.
+
+### Commits in this phase
+
+1. `prompt-4b-engine-state-and-routing` — engine nodeState/inFlight, routing.ts, latency.ts, type updates
+2. `prompt-4b-shared-helpers` — forward / reverse / timeout / retry primitives
+3. `prompt-4b-eleven-behaviors-and-worker` — all 11 behaviors + worker import update + echo deletion
+
+(The Prompt 4b §10 ordering of one commit per behavior was collapsed to a single commit because each per-behavior commit would leave the worker importing a non-existent file or leave the engine without enough behaviors registered to simulate any design — the commits weren't independently functional. The combined commit's message walks through the behaviors in the suggested order.)
+
+---
+
 ## Phase 4a — Simulation Engine Core (complete)
 
 `npm run dev` → http://localhost:5173 — Simulate mode now shows SimDebugPage
