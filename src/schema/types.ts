@@ -220,8 +220,11 @@ export interface Design {
   nodes: Node[]
   edges: Edge[]
   annotations: Annotation[]
-  sketches: Sketch[] // all sketches ever drawn; last one is the current sketch
+  sketches: Sketch[]
   viewport: Viewport
+  /** Persisted chaos schedule. Default []. Optional for back-compat with v1 designs
+   *  that pre-date 4c; persistence/migrations.ts backfills on load. */
+  chaosPlan?: ChaosEventSpec[]
 }
 
 // ─── Simulation config types ──────────────────────────────────────────────────
@@ -253,30 +256,37 @@ export interface TrafficSource {
   // One global seed → one button → reproducible run. Users never configure per-source seeds.
 }
 
-// ChaosEventSpec is user-facing config stored in SimulationRequest.chaosPlan.
+// ChaosEventSpec is user-facing config stored on Design.chaosPlan.
 // The engine compiles each spec into 1–2 SimEvents at simulation init (start + optional end).
 // Do not confuse with SimEvent, which is the engine-internal priority-queue entry.
+//
+// The `id` field exists so the timeline editor can identify each scheduled event
+// for drag/edit/delete without relying on array index (positions are mutable).
 export type ChaosEventSpec =
   | {
+      id: string
       kind: 'node_crash'
       node_id: string
       at_ms: number
       duration_ms: number // recovery scheduled at at_ms + duration_ms
     }
   | {
+      id: string
       kind: 'network_partition'
-      partition_a: string[] // node ids in partition A
-      partition_b: string[] // node ids in partition B
+      partition_a: string[]
+      partition_b: string[]
       at_ms: number
       duration_ms: number
     }
   | {
+      id: string
       kind: 'traffic_spike'
       multiplier: number // applied to all active traffic sources
       at_ms: number
       duration_ms: number
     }
   | {
+      id: string
       kind: 'cache_miss_storm'
       node_id: string // must resolve to a 'cache' node
       at_ms: number

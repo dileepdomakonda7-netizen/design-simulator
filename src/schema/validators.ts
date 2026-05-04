@@ -187,6 +187,40 @@ export const ViewportSchema = z.object({
   zoom: z.number().positive(),
 })
 
+// ─── Chaos schema (declared before DesignSchema since Design references it) ──
+
+export const ChaosEventSpecSchema = z.discriminatedUnion('kind', [
+  z.object({
+    id: z.string().min(1),
+    kind: z.literal('node_crash'),
+    node_id: z.string().min(1),
+    at_ms: z.number().nonnegative(),
+    duration_ms: z.number().positive(),
+  }),
+  z.object({
+    id: z.string().min(1),
+    kind: z.literal('network_partition'),
+    partition_a: z.array(z.string()),
+    partition_b: z.array(z.string()),
+    at_ms: z.number().nonnegative(),
+    duration_ms: z.number().positive(),
+  }),
+  z.object({
+    id: z.string().min(1),
+    kind: z.literal('traffic_spike'),
+    multiplier: z.number().positive(),
+    at_ms: z.number().nonnegative(),
+    duration_ms: z.number().positive(),
+  }),
+  z.object({
+    id: z.string().min(1),
+    kind: z.literal('cache_miss_storm'),
+    node_id: z.string().min(1),
+    at_ms: z.number().nonnegative(),
+    duration_ms: z.number().positive(),
+  }),
+])
+
 export const DesignSchema = z.object({
   schemaVersion: z.literal(1),
   id: z.string().min(1),
@@ -198,6 +232,7 @@ export const DesignSchema = z.object({
   annotations: z.array(AnnotationSchema),
   sketches: z.array(SketchSchema),
   viewport: ViewportSchema,
+  chaosPlan: z.array(ChaosEventSpecSchema).optional(),
 })
 
 // ─── Simulation config schemas ────────────────────────────────────────────────
@@ -242,34 +277,6 @@ export const TrafficSourceSchema = z.object({
   target_node_id: z.string().min(1),
   load_shape: LoadShapeSchema,
 })
-
-export const ChaosEventSpecSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('node_crash'),
-    node_id: z.string().min(1),
-    at_ms: z.number().nonnegative(),
-    duration_ms: z.number().positive(),
-  }),
-  z.object({
-    kind: z.literal('network_partition'),
-    partition_a: z.array(z.string()),
-    partition_b: z.array(z.string()),
-    at_ms: z.number().nonnegative(),
-    duration_ms: z.number().positive(),
-  }),
-  z.object({
-    kind: z.literal('traffic_spike'),
-    multiplier: z.number().positive(),
-    at_ms: z.number().nonnegative(),
-    duration_ms: z.number().positive(),
-  }),
-  z.object({
-    kind: z.literal('cache_miss_storm'),
-    node_id: z.string().min(1),
-    at_ms: z.number().nonnegative(),
-    duration_ms: z.number().positive(),
-  }),
-])
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
 
