@@ -1,6 +1,7 @@
 import type { Edge } from '@/schema/types'
 import type { SimRequest } from '../types'
 import { sampleEdgeLatency } from '../latency'
+import { recordOutcome, shouldReject } from '../circuitBreaker'
 import type { BehaviorContext, NewEvent } from './types'
 
 // ─── Forward and reverse helpers ─────────────────────────────────────────────
@@ -139,6 +140,113 @@ export function displaceAndRespond(
   ]
 }
 
+// ─── Phase 6b — circuit-breaker integration helpers ──────────────────────────
+//
+// The breaker for edge E lives at E's source node. Two integration points:
+//
+//   1. Before emitting a request_send over E → call emitWithBreaker (instead
+//      of forwardRequest directly). It checks shouldReject; if rejected,
+//      emits a request_reject('circuit_open') and a fast failure response
+//      upstream — and DOES NOT touch the wire. If allowed, calls
+//      forwardRequest and emits the corresponding state-transition event
+//      if shouldReject moved the state machine.
+//
+//   2. When a request_response arrives back at the source for a request
+//      that went out over E → call observeOutcomeForCurrentRequest with
+//      success/failure derived from the response payload. Also call it on
+//      request_timeout. The helper looks up the edge from the request's
+//      forward path (path[my_index + 1] is the next-forward-hop) and
+//      reports the outcome to the breaker.
+
+/**
+ * Forward a request over `edge` with circuit-breaker pre-flight. If the
+ * edge has no breaker enabled, equivalent to forwardRequest.
+ */
+export function emitWithBreaker(
+  ctx: BehaviorContext,
+  edge: Edge,
+  options?: { atOffset?: number; newRequestId?: string },
+): NewEvent[] {
+  const cb = edge.params.circuit_breaker
+  if (!cb || !cb.enabled) {
+    return forwardRequest(ctx, edge, options)
+  }
+  const edgeState = ctx.getEdgeState(edge.id)
+  const decision = shouldReject(edgeState, cb, ctx.now)
+  if (decision.reject) {
+    // Don't touch the wire. The breaker is open (or half-open with a probe
+    // already out). Produce a fast failure response upstream.
+    return rejectAndRespond(ctx, 'circuit_open', { edgeId: edge.id })
+  }
+  const events = forwardRequest(ctx, edge, options)
+  if (decision.transitionedTo) {
+    events.push({
+      at: ctx.now,
+      kind:
+        decision.transitionedTo === 'half_open'
+          ? 'circuit_breaker_half_open'
+          : decision.transitionedTo === 'open'
+            ? 'circuit_breaker_opened'
+            : 'circuit_breaker_closed',
+      payload: { edgeId: edge.id },
+    })
+  }
+  return events
+}
+
+/**
+ * Observe an outcome for the breaker on the edge this node sent the
+ * `request` over (looked up from the request's forward path). Outcome is
+ * success or failure. Returns 0..1 events depending on whether the breaker
+ * state changed.
+ */
+export function observeOutcomeForRequest(
+  ctx: BehaviorContext,
+  request: SimRequest,
+  outcome: 'success' | 'failure',
+): NewEvent[] {
+  const myIndex = request.path.indexOf(ctx.node.id)
+  if (myIndex < 0 || myIndex + 1 >= request.path.length) return []
+  const nextHop = request.path[myIndex + 1]
+  if (!nextHop) return []
+  const edge = ctx.outgoing.find((e) => e.target === nextHop)
+  if (!edge) return []
+  const cb = edge.params.circuit_breaker
+  if (!cb || !cb.enabled) return []
+  const edgeState = ctx.getEdgeState(edge.id)
+  const result = recordOutcome(edgeState, outcome, cb, ctx.now)
+  if (!result.stateChanged) return []
+  const kind =
+    result.newState === 'open'
+      ? 'circuit_breaker_opened'
+      : result.newState === 'closed'
+        ? 'circuit_breaker_closed'
+        : 'circuit_breaker_half_open'
+  return [
+    {
+      at: ctx.now,
+      kind,
+      payload: {
+        edgeId: edge.id,
+        ...(result.failureRate !== undefined ? { failureRate: result.failureRate } : {}),
+      },
+    },
+  ]
+}
+
+/**
+ * Convenience: observe outcome for ctx.request. Returns [] if no current
+ * request or path doesn't reach a downstream. Equivalent to calling
+ * observeOutcomeForRequest with ctx.request.
+ */
+export function observeCurrentRequestOutcome(
+  ctx: BehaviorContext,
+  outcome: 'success' | 'failure',
+): NewEvent[] {
+  if (!ctx.request) return []
+  return observeOutcomeForRequest(ctx, ctx.request, outcome)
+}
+
 /** Emit a local request_reject at the current node with the given reason. */
 export function rejectHere(
   ctx: BehaviorContext,
@@ -252,7 +360,11 @@ export function planRetry(
     payload: { attempt: attempt + 1 },
     ...(ctx.request ? { requestId: ctx.request.id } : {}),
   }
+  // 6b: route the retry through emitWithBreaker so an open breaker
+  // short-circuits the retry instead of re-attempting on a known-failing
+  // downstream — this is what actually breaks the failure-amplification
+  // cycle that is the entire point of the breaker.
   return {
-    events: [retryEvent, ...forwardRequest(ctx, edge, { atOffset: delay })],
+    events: [retryEvent, ...emitWithBreaker(ctx, edge, { atOffset: delay })],
   }
 }
