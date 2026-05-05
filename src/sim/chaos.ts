@@ -148,6 +148,28 @@ export function compileChaosPlan(
         }
         break
       }
+      case 'replication_lag_spike': {
+        // Phase 6d: spike a database's replication-lag distribution by a
+        // multiplier of 1 + intensity*9. While active, every replica read
+        // samples lag from the scaled distribution. Engine processes
+        // start/end to set/clear an entry in `replicationLagOverrides`.
+        const multiplier = 1 + spec.intensity * 9
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms,
+          kind: 'replication_lag_spike_start',
+          nodeId: spec.node_id,
+          payload: { multiplier },
+        })
+        events.push({
+          id: nextEventId++,
+          at: clampEnd(spec.at_ms, spec.duration_ms),
+          kind: 'replication_lag_spike_end',
+          nodeId: spec.node_id,
+          payload: {},
+        })
+        break
+      }
       case 'node_degraded': {
         // Phase 6c: a window during which the target node returns degraded
         // responses (slower, more errors, or both). Engine processes start
