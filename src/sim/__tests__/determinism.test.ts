@@ -901,3 +901,122 @@ describe('phase 6c partial failures', () => {
     expect(tight.events).toEqual(tight2.events)
   })
 })
+
+/**
+ * Phase 6d: client → database with replicas=3, read_routing='mixed'.
+ * Two seed=42 runs must produce byte-identical event streams INCLUDING the
+ * stalenessMs and replicaIndex payloads. A different seed should diverge.
+ *
+ * The point: replica selection and per-read lag sampling both pull from the
+ * deterministic per-node rng — never from a fresh stream — so re-runs of the
+ * same scenario are reproducible to the byte.
+ */
+describe('phase 6d replication', () => {
+  function replicaDesign(): Design {
+    const now = '2026-01-01T00:00:00.000Z'
+    return {
+      schemaVersion: 1,
+      id: 'd-rep',
+      name: 't',
+      createdAt: now,
+      updatedAt: now,
+      nodes: [
+        {
+          id: 'cli', position: { x: 0, y: 0 }, label: 'C', notes: '', type: 'client',
+          params: { rps: 10, think_time_ms: 100, timeout_ms: 5000, retry_policy: { kind: 'none' } },
+        },
+        {
+          id: 'db', position: { x: 200, y: 0 }, label: 'D', notes: '', type: 'database',
+          params: {
+            subtype: 'relational',
+            replicas: 3,
+            read_capacity_rps: 5000,
+            write_capacity_rps: 1000,
+            replication_mode: 'async',
+            replication_lag_ms_p50: 20,
+            replication_lag_ms_p99: 200,
+            read_latency_ms_p50: 5,
+            read_latency_ms_p99: 30,
+            write_latency_ms_p50: 10,
+            write_latency_ms_p99: 80,
+            failure_rate: 0,
+            read_routing: 'mixed',
+          },
+        },
+      ],
+      edges: [
+        {
+          id: 'e1', source: 'cli', target: 'db', kind: 'sync_rpc',
+          params: {
+            network_latency_ms_p50: 1, network_latency_ms_p99: 5, timeout_ms: 3000,
+            retry_policy: { kind: 'none' },
+            circuit_breaker: { enabled: false, failure_threshold: 0.5, success_threshold: 3, half_open_timeout_ms: 5000 },
+            idempotent: false,
+          },
+        },
+      ],
+      annotations: [],
+      sketches: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    }
+  }
+
+  async function runReplica(seed: number): Promise<{ events: SimEvent[] }> {
+    const events: SimEvent[] = []
+    const config: SimRunConfig = {
+      design: replicaDesign(),
+      traffic: [
+        { id: 'src', label: 'T', target_node_id: 'cli', load_shape: { kind: 'constant', rps: 10 } },
+      ],
+      chaos: [],
+      durationMs: 3000,
+      seed,
+      snapshotIntervalMs: 250,
+    }
+    const engine = new SimulationEngine(config, () => {}, (e) => events.push(e))
+    await engine.run()
+    return { events }
+  }
+
+  it('replica routing produces deterministic stalenessMs and replicaIndex', async () => {
+    const a = await runReplica(42)
+    const b = await runReplica(42)
+    expect(a.events).toEqual(b.events)
+
+    // Seed=99 must diverge.
+    const c = await runReplica(99)
+    expect(computeDigest(a.events)).not.toBe(computeDigest(c.events))
+
+    // Sanity: at least some response payloads carry stalenessMs and a valid
+    // replicaIndex in the [0..N-2] range. With 'mixed', not every response
+    // hits a replica — but enough do over a 3s window at 10 rps.
+    const replicaResponses = a.events.filter((e) => {
+      if (e.kind !== 'request_response') return false
+      const p = e.payload as { replicaIndex?: number; stalenessMs?: number } | undefined
+      return p?.replicaIndex !== undefined && (p.stalenessMs ?? 0) > 0
+    })
+    expect(replicaResponses.length).toBeGreaterThan(0)
+    for (const e of replicaResponses) {
+      const p = e.payload as { replicaIndex?: number }
+      expect(p.replicaIndex).toBeGreaterThanOrEqual(0)
+      expect(p.replicaIndex).toBeLessThanOrEqual(1) // replicas=3 → indices 0..1
+    }
+
+    // And the snapshot's maxStalenessMs surfaces a positive number.
+    const snapshots: SimSnapshot[] = []
+    const config: SimRunConfig = {
+      design: replicaDesign(),
+      traffic: [
+        { id: 'src', label: 'T', target_node_id: 'cli', load_shape: { kind: 'constant', rps: 10 } },
+      ],
+      chaos: [],
+      durationMs: 3000,
+      seed: 42,
+      snapshotIntervalMs: 250,
+    }
+    const engine = new SimulationEngine(config, (s) => snapshots.push(s), () => {})
+    await engine.run()
+    const maxes = snapshots.map((s) => s.windowMetrics.maxStalenessMs)
+    expect(Math.max(...maxes)).toBeGreaterThan(0)
+  })
+})
