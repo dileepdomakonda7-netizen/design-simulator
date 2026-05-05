@@ -390,6 +390,160 @@ describe('phase 6a backpressure', () => {
     expect(appRejects.length).toBeGreaterThan(0)
   })
 
+  it('breaker reduces send attempts vs retries-without-breaker', async () => {
+    // client → app_server → external_service that always fails (failure_rate=1).
+    // Edge app_server → external_service has retry_policy with 5 attempts.
+    // Without breaker: ~6× send attempts per request (1 + 5 retries) ≈ 50 × 6 = 300.
+    // With breaker: after the breaker opens, retries short-circuit at the source.
+    function design(withBreaker: boolean): Design {
+      const now = '2026-01-01T00:00:00.000Z'
+      return {
+        schemaVersion: 1,
+        id: 'd-cb',
+        name: 't',
+        createdAt: now,
+        updatedAt: now,
+        nodes: [
+          {
+            id: 'cli',
+            position: { x: 0, y: 0 },
+            label: 'C',
+            notes: '',
+            type: 'client',
+            params: {
+              rps: 10,
+              think_time_ms: 100,
+              timeout_ms: 5000,
+              retry_policy: { kind: 'none' },
+            },
+          },
+          {
+            id: 'app',
+            position: { x: 100, y: 0 },
+            label: 'A',
+            notes: '',
+            type: 'app_server',
+            params: {
+              instances: 5,
+              max_concurrent_per_instance: 100,
+              latency_ms_p50: 5,
+              latency_ms_p99: 10,
+              failure_rate: 0,
+            },
+          },
+          {
+            id: 'ext',
+            position: { x: 200, y: 0 },
+            label: 'X',
+            notes: '',
+            type: 'external_service',
+            params: {
+              latency_ms_p50: 5,
+              latency_ms_p99: 10,
+              failure_rate: 1,
+              timeout_ms: 3000,
+              rate_limit_rps: 0,
+            },
+          },
+        ],
+        edges: [
+          {
+            id: 'e1',
+            source: 'cli',
+            target: 'app',
+            kind: 'sync_rpc',
+            params: {
+              network_latency_ms_p50: 1,
+              network_latency_ms_p99: 5,
+              timeout_ms: 3000,
+              retry_policy: { kind: 'none' },
+              circuit_breaker: {
+                enabled: false,
+                failure_threshold: 0.5,
+                success_threshold: 3,
+                half_open_timeout_ms: 5000,
+              },
+              idempotent: false,
+            },
+          },
+          {
+            id: 'e2',
+            source: 'app',
+            target: 'ext',
+            kind: 'sync_rpc',
+            params: {
+              network_latency_ms_p50: 1,
+              network_latency_ms_p99: 5,
+              timeout_ms: 3000,
+              retry_policy: {
+                kind: 'exponential_backoff',
+                max_retries: 5,
+                base_delay_ms: 100,
+                max_delay_ms: 2000,
+                jitter: false,
+              },
+              circuit_breaker: {
+                enabled: withBreaker,
+                failure_threshold: 0.5,
+                success_threshold: 3,
+                half_open_timeout_ms: 1000,
+              },
+              idempotent: false,
+            },
+          },
+        ],
+        annotations: [],
+        sketches: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+        chaosPlan: [],
+      }
+    }
+
+    async function run(withBreaker: boolean): Promise<{ events: SimEvent[] }> {
+      const events: SimEvent[] = []
+      const config: SimRunConfig = {
+        design: design(withBreaker),
+        traffic: [
+          {
+            id: 'src',
+            label: 'T',
+            target_node_id: 'cli',
+            load_shape: { kind: 'constant', rps: 10 },
+          },
+        ],
+        chaos: [],
+        durationMs: 5000,
+        seed: 42,
+        snapshotIntervalMs: 250,
+      }
+      const engine = new SimulationEngine(config, () => {}, (e) => events.push(e))
+      await engine.run()
+      return { events }
+    }
+
+    const noBreaker = await run(false)
+    const withBreaker = await run(true)
+
+    const sendsOver = (events: SimEvent[]) =>
+      events.filter((e) => e.kind === 'request_send' && e.edgeId === 'e2').length
+    const sendsNoBreaker = sendsOver(noBreaker.events)
+    const sendsWithBreaker = sendsOver(withBreaker.events)
+
+    // The breaker should meaningfully reduce send attempts. Concrete bound:
+    // with-breaker has fewer than half of without-breaker.
+    expect(sendsWithBreaker).toBeLessThan(sendsNoBreaker / 2)
+
+    // Determinism: same seed → same event stream with breaker on.
+    const withBreaker2 = await run(true)
+    expect(withBreaker.events).toEqual(withBreaker2.events)
+
+    // Breaker actually opened.
+    const opens = withBreaker.events.filter(
+      (e) => e.kind === 'circuit_breaker_opened',
+    )
+    expect(opens.length).toBeGreaterThan(0)
+  })
+
   it('different bounded queue depth → different digest', async () => {
     const a = await runOverload(42)
     // Now run with depth 5 instead of 10.
