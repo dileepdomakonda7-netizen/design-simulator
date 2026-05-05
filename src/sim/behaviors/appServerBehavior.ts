@@ -37,6 +37,8 @@ import {
   observeCurrentRequestOutcome,
   rejectAndRespond,
   displaceAndRespond,
+  scheduleTimeoutGuard,
+  clearTimeoutGuard,
 } from './shared'
 import type { Behavior, NewEvent } from './types'
 import type { Node } from '@/schema/types'
@@ -219,6 +221,21 @@ const onRequestComplete: Behavior = (ctx) => {
   const downstream = success ? defaultNextHop(ctx.outgoing) : undefined
   if (downstream) {
     out.push(...emitWithBreaker(ctx, downstream))
+    // Phase 6c bugfix: enforce the edge's timeout_ms on the downstream call.
+    // Without this guard, a slow downstream (degraded or otherwise) bleeds
+    // into the upstream's tail latency — the lesson of acceptance #5 cannot
+    // be observed. Pattern mirrors load_balancer / api_gateway / cdn.
+    if (ctx.request && downstream.params.timeout_ms > 0) {
+      out.push(
+        scheduleTimeoutGuard(
+          ctx.node.id,
+          ctx.request.id,
+          downstream.params.timeout_ms,
+          ctx.now,
+          ctx.nodeState,
+        ),
+      )
+    }
   } else {
     out.push(...forwardResponseUpstream(ctx, success))
   }
@@ -235,8 +252,24 @@ const onRequestComplete: Behavior = (ctx) => {
 /**
  * Response from downstream came back. Observe the outcome for the breaker on
  * the downstream edge, then forward the response upstream toward the client.
+ *
+ * Ghost-response handling (Phase 6c bugfix): if the edge timeout already
+ * fired, this is a late "ghost" response — drop it. The upstream has already
+ * received the failure response we sent at timeout, and forwarding a second
+ * response would muddy the event log.
  */
 const onRequestResponse: Behavior = (ctx) => {
+  if (!ctx.request) return []
+  const wasAwaiting = clearTimeoutGuard(ctx.request.id, ctx.nodeState)
+  // wasAwaiting=false means a downstream call was either never timeout-guarded
+  // (no edge timeout configured — keep the legacy path) OR the timeout fired
+  // first. Distinguish: only drop as ghost if the request id was guarded for
+  // SOME edge from this node — i.e., the node has a downstream and we set up
+  // a guard. We approximate "had a guard" by "had at least one outgoing edge
+  // with timeout_ms>0" — same condition as the scheduling site above.
+  const hadGuard = ctx.outgoing.some((e) => e.params.timeout_ms > 0)
+  if (hadGuard && !wasAwaiting) return [] // ghost response after timeout
+
   const payload = ctx.triggeringEvent.payload as { success?: boolean } | undefined
   const success = payload?.success ?? true
   return [
@@ -245,6 +278,23 @@ const onRequestResponse: Behavior = (ctx) => {
   ]
 }
 
+/**
+ * Phase 6c bugfix: edge timeout fired before the downstream responded. If
+ * still awaiting, observe the failure for the breaker and forward a failure
+ * response upstream. If not awaiting, the response already arrived and the
+ * timeout is stale — no-op.
+ */
+const onRequestTimeout: Behavior = (ctx) => {
+  if (!ctx.request) return []
+  const wasAwaiting = clearTimeoutGuard(ctx.request.id, ctx.nodeState)
+  if (!wasAwaiting) return []
+  return [
+    ...observeCurrentRequestOutcome(ctx, 'failure'),
+    ...forwardResponseUpstream(ctx, false),
+  ]
+}
+
 registerBehavior('app_server', 'request_receive', onRequestReceive)
 registerBehavior('app_server', 'request_complete', onRequestComplete)
 registerBehavior('app_server', 'request_response', onRequestResponse)
+registerBehavior('app_server', 'request_timeout', onRequestTimeout)

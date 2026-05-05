@@ -2,8 +2,25 @@
 
 ## Phase 6c — Partial Failures (complete)
 
-`npm test` → 12/12
+`npm test` → 13/13
 `npm run typecheck` clean
+
+### Bugfix: edge timeout_ms not enforced on emitWithBreaker callers
+
+**Bug class:** an outbound behavior called `emitWithBreaker(ctx, edge)` to forward downstream but never scheduled a `request_timeout` guard. Result: `edge.params.timeout_ms` was a no-op for those callers — slow downstream latency bled all the way through to the originating client. The "timeouts convert partial failure into clean failure" lesson (acceptance #5) could not be observed.
+
+Affected behaviors: `app_server.onRequestComplete` (downstream forward) and `cache.onRequestReceive` (miss-path origin call). The reverse-path / timeout-firing handlers were also missing.
+
+The pattern is now symmetric with `load_balancer` / `api_gateway` / `cdn`:
+
+  1. After `emitWithBreaker(ctx, edge)`, call `scheduleTimeoutGuard(ctx.node.id, ctx.request.id, edge.params.timeout_ms, ctx.now, ctx.nodeState)` when `timeout_ms > 0`.
+  2. Register a `request_timeout` handler that observes failure for the breaker and forwards a failure response upstream.
+  3. In `request_response`, `clearTimeoutGuard` first; if not awaiting AND the node had configured guards, drop as a "ghost" response (timeout already fired and we already responded upstream).
+
+Regression test: `tight edge timeout converts slow downstream into clean failure` — `client → app → ext` with `ext` degraded at intensity 1.0; asserts that `timeout_ms=200` produces >10 timeouts at app while `timeout_ms=5000` produces < tightTimeouts/4. Determinism preserved across two seed=42 runs.
+
+Single commit: `fix-6c-edge-timeout-not-applied`.
+
 
 ### Files
 

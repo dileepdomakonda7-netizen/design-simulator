@@ -27,8 +27,10 @@ import {
   forwardResponseUpstream,
   observeCurrentRequestOutcome,
   rejectHere,
+  scheduleTimeoutGuard,
+  clearTimeoutGuard,
 } from './shared'
-import type { Behavior } from './types'
+import type { Behavior, NewEvent } from './types'
 import type { Node } from '@/schema/types'
 
 function getParams(node: Node): Extract<Node, { type: 'cache' }>['params'] {
@@ -83,7 +85,20 @@ const onRequestReceive: Behavior = (ctx) => {
     // Cache miss with nothing downstream — treat as failure.
     return rejectHere(ctx, 'failed')
   }
-  return emitWithBreaker(ctx, edge)
+  const events: NewEvent[] = emitWithBreaker(ctx, edge)
+  // Phase 6c bugfix: enforce edge timeout_ms on miss-path origin call.
+  if (edge.params.timeout_ms > 0) {
+    events.push(
+      scheduleTimeoutGuard(
+        ctx.node.id,
+        ctx.request.id,
+        edge.params.timeout_ms,
+        ctx.now,
+        ctx.nodeState,
+      ),
+    )
+  }
+  return events
 }
 
 const onRequestComplete: Behavior = (ctx) => {
@@ -92,6 +107,12 @@ const onRequestComplete: Behavior = (ctx) => {
 }
 
 const onRequestResponse: Behavior = (ctx) => {
+  if (!ctx.request) return []
+  // Phase 6c bugfix: drop ghost responses that arrive after the edge timeout fired.
+  const wasAwaiting = clearTimeoutGuard(ctx.request.id, ctx.nodeState)
+  const hadGuard = ctx.outgoing.some((e) => e.params.timeout_ms > 0)
+  if (hadGuard && !wasAwaiting) return []
+
   // Origin response on miss path. Observe outcome for the cache→origin
   // edge breaker, then forward upstream.
   const payload = ctx.triggeringEvent.payload as { success?: boolean } | undefined
@@ -102,6 +123,18 @@ const onRequestResponse: Behavior = (ctx) => {
   ]
 }
 
+/** Phase 6c bugfix: edge timeout fired before origin responded. */
+const onRequestTimeout: Behavior = (ctx) => {
+  if (!ctx.request) return []
+  const wasAwaiting = clearTimeoutGuard(ctx.request.id, ctx.nodeState)
+  if (!wasAwaiting) return []
+  return [
+    ...observeCurrentRequestOutcome(ctx, 'failure'),
+    ...forwardResponseUpstream(ctx, false),
+  ]
+}
+
 registerBehavior('cache', 'request_receive', onRequestReceive)
 registerBehavior('cache', 'request_complete', onRequestComplete)
 registerBehavior('cache', 'request_response', onRequestResponse)
+registerBehavior('cache', 'request_timeout', onRequestTimeout)

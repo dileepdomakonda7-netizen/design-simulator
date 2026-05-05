@@ -736,4 +736,168 @@ describe('phase 6c partial failures', () => {
     expect(ends.length).toBe(1)
     expect(computeDigest(a.events)).toBe(computeDigest(b.events))
   })
+
+  /**
+   * Acceptance #5: a tight edge timeout converts partial failure into clean
+   * failure. With the downstream node degraded to ~10× latency (intensity=1.0
+   * over a p50=100/p99=500 base → effective p50=1000/p99=5000), the edge from
+   * app_server → external_service times out near `edge.params.timeout_ms`.
+   *
+   * Run A (timeout_ms=200) should produce many request_timeout events at the
+   * app_server. Run B (timeout_ms=5000) should produce few (the requests fit
+   * inside the budget and complete normally).
+   *
+   * This test was added to catch the bug where app_server forwarded to
+   * downstream via emitWithBreaker but never scheduled a timeout guard for
+   * the edge — making `edge.params.timeout_ms` a no-op.
+   */
+  async function runTimeoutVsSlow(
+    edgeTimeoutMs: number,
+    seed: number,
+  ): Promise<{ events: SimEvent[] }> {
+    const events: SimEvent[] = []
+    const now = '2026-01-01T00:00:00.000Z'
+    const design: Design = {
+      schemaVersion: 1,
+      id: 'd-timeout',
+      name: 't',
+      createdAt: now,
+      updatedAt: now,
+      nodes: [
+        {
+          id: 'cli',
+          position: { x: 0, y: 0 },
+          label: 'C',
+          notes: '',
+          type: 'client',
+          params: {
+            rps: 10,
+            think_time_ms: 100,
+            timeout_ms: 8000,
+            retry_policy: { kind: 'none' },
+          },
+        },
+        {
+          id: 'app',
+          position: { x: 100, y: 0 },
+          label: 'A',
+          notes: '',
+          type: 'app_server',
+          params: {
+            instances: 5,
+            max_concurrent_per_instance: 100,
+            latency_ms_p50: 5,
+            latency_ms_p99: 10,
+            failure_rate: 0,
+          },
+        },
+        {
+          id: 'ext',
+          position: { x: 200, y: 0 },
+          label: 'X',
+          notes: '',
+          type: 'external_service',
+          params: {
+            latency_ms_p50: 100,
+            latency_ms_p99: 500,
+            failure_rate: 0,
+            timeout_ms: 8000,
+            rate_limit_rps: 0,
+          },
+        },
+      ],
+      edges: [
+        {
+          id: 'e1',
+          source: 'cli',
+          target: 'app',
+          kind: 'sync_rpc',
+          params: {
+            network_latency_ms_p50: 1,
+            network_latency_ms_p99: 5,
+            timeout_ms: 8000,
+            retry_policy: { kind: 'none' },
+            circuit_breaker: {
+              enabled: false,
+              failure_threshold: 0.5,
+              success_threshold: 3,
+              half_open_timeout_ms: 5000,
+            },
+            idempotent: false,
+          },
+        },
+        {
+          id: 'e2',
+          source: 'app',
+          target: 'ext',
+          kind: 'sync_rpc',
+          params: {
+            network_latency_ms_p50: 1,
+            network_latency_ms_p99: 5,
+            timeout_ms: edgeTimeoutMs,
+            retry_policy: { kind: 'none' },
+            circuit_breaker: {
+              enabled: false,
+              failure_threshold: 0.5,
+              success_threshold: 3,
+              half_open_timeout_ms: 5000,
+            },
+            idempotent: false,
+          },
+        },
+      ],
+      annotations: [],
+      sketches: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    }
+    const config: SimRunConfig = {
+      design,
+      traffic: [
+        {
+          id: 'src',
+          label: 'T',
+          target_node_id: 'cli',
+          load_shape: { kind: 'constant', rps: 10 },
+        },
+      ],
+      chaos: [
+        {
+          id: 'd1',
+          kind: 'node_degraded',
+          node_id: 'ext',
+          at_ms: 0,
+          duration_ms: 5000,
+          mode: 'slow',
+          intensity: 1.0,
+        },
+      ],
+      durationMs: 5000,
+      seed,
+      snapshotIntervalMs: 250,
+    }
+    const engine = new SimulationEngine(config, () => {}, (e) => events.push(e))
+    await engine.run()
+    return { events }
+  }
+
+  it('tight edge timeout converts slow downstream into clean failure', async () => {
+    const tight = await runTimeoutVsSlow(200, 42)
+    const loose = await runTimeoutVsSlow(5000, 42)
+
+    const timeoutsAt = (events: SimEvent[], nodeId: string) =>
+      events.filter((e) => e.kind === 'request_timeout' && e.nodeId === nodeId)
+
+    const tightTimeouts = timeoutsAt(tight.events, 'app').length
+    const looseTimeouts = timeoutsAt(loose.events, 'app').length
+
+    // Tight timeout: most requests time out at the app_server (~30+ over the
+    // 5s window at 10rps with effective p50≈1000ms).
+    expect(tightTimeouts).toBeGreaterThan(10)
+    // Loose timeout: the budget covers the degraded p99, so few/no timeouts.
+    expect(looseTimeouts).toBeLessThan(tightTimeouts / 4)
+
+    // Determinism: same seed → identical event stream with the tight timeout.
+    const tight2 = await runTimeoutVsSlow(200, 42)
+    expect(tight.events).toEqual(tight2.events)
+  })
 })
