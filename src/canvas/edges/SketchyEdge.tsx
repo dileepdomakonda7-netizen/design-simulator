@@ -9,6 +9,7 @@ import {
 import rough from 'roughjs'
 import type { Edge, EdgeKind } from '@/schema/types'
 import { hashCode } from '@/canvas/nodes/util'
+import { useSimStore } from '@/store/simStore'
 
 type Data = { schemaEdge: Edge }
 
@@ -53,9 +54,26 @@ function SketchyEdgeImpl({
 }: EdgeProps<RFEdge<Data>>) {
   const svgRef = useRef<SVGGElement>(null)
   const kind = data?.schemaEdge.kind ?? 'sync_rpc'
-  const style = KIND_STYLE[kind]
+  const baseStyle = KIND_STYLE[kind]
   const seed = hashCode(id)
   const label = data?.schemaEdge.label
+
+  // Phase 6b: read this edge's circuit-breaker state from the latest snapshot.
+  // Override the visual style when the breaker is non-closed: open is red and
+  // thicker, half_open is orange dashed.
+  const cbState = useSimStore(
+    (s) => s.latestSnapshot?.edges?.[id]?.cbState,
+  )
+  const style: { stroke: string; strokeWidth: number; dash?: number[] } =
+    cbState === 'open'
+      ? { stroke: '#dc2626', strokeWidth: baseStyle.strokeWidth + 1.4 }
+      : cbState === 'half_open'
+        ? {
+            stroke: '#f97316',
+            strokeWidth: baseStyle.strokeWidth + 0.8,
+            dash: [4, 3],
+          }
+        : baseStyle
 
   // React Flow's bezier helper gives us a stable cubic path; we use it as the
   // "skeleton" but also render rough.js wobble on top. The bezier path is

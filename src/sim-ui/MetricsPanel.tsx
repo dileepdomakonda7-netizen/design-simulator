@@ -234,6 +234,11 @@ export function MetricsPanel() {
           <Stat label="failed" value={c?.totalRequestsFailed ?? 0} color="text-red-700" />
           <Stat label="rejected" value={c?.totalRequestsRejected ?? 0} color="text-red-600" />
           <Stat label="timed out" value={c?.totalRequestsTimedOut ?? 0} color="text-orange-600" />
+          <Stat
+            label="breaker rejects"
+            value={useCumBreakerRejections()}
+            color="text-amber-700"
+          />
         </div>
       </div>
     </div>
@@ -285,6 +290,24 @@ function pickInterestingEvent(
   }
   const picked = bestInteresting ?? bestAny
   return picked ? picked.id : null
+}
+
+/**
+ * Phase 6b: cumulative count of `request_reject` events with reason 'circuit_open'.
+ * Read off the events array directly so we don't have to wire a separate counter
+ * through the engine snapshot for what is fundamentally a derived metric.
+ */
+function useCumBreakerRejections(): number {
+  const events = useSimStore((s) => s.events)
+  return useMemo(() => {
+    let n = 0
+    for (const e of events) {
+      if (e.kind !== 'request_reject') continue
+      const p = e.payload as { reason?: string } | undefined
+      if (p?.reason === 'circuit_open') n++
+    }
+    return n
+  }, [events])
 }
 
 function Stat({ label, value, color }: { label: string; value: number; color?: string }) {
