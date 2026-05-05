@@ -1,5 +1,49 @@
 # Progress
 
+## Phase 6c — Partial Failures (complete)
+
+`npm test` → 12/12
+`npm run typecheck` clean
+
+### Files
+
+- Modified: `src/schema/{types,validators}.ts`, `src/sim/{types,engine,chaos}.ts`, `src/sim/behaviors/{types,appServerBehavior,databaseBehavior,cacheBehavior,cdnBehavior,pubSubBehavior,objectStorageBehavior,externalServiceBehavior}.ts`, `src/sim-ui/{SimulationCanvas,ChaosTimeline}.tsx`, `src/sim/__tests__/determinism.test.ts`
+
+### Model
+
+A degraded node returns *worse* responses for a window — slower, more errors, or both — without going down. One dial: `intensity ∈ [0,1]`. Three modes:
+
+- `slow` — multiply latency p50/p99 by `1 + intensity * 9` (1× at 0, 10× at 1)
+- `errors` — replace `failure_rate` with `min(intensity, 1)`
+- `slow_and_errors` — both apply
+
+Engine-only event kinds `node_degraded_start` / `node_degraded_end` mutate `engine.degradedNodes: Map<NodeId, DegradationState>`. Behaviors never see those events; they call `ctx.applyDegradation({p50, p99, failure_rate}, nodeId)` once per request and use the returned struct for `sampleLatency` and the failure-rate check.
+
+7 behaviors wrapped: `app_server`, `database`, `cache`, `cdn`, `pub_sub`, `object_storage`, `external_service`. `client`, `load_balancer`, and `api_gateway` are skipped (their delays are fixed/auth-overhead, not p50/p99). `queue` is deferred — partial-failure semantics for an async buffer are unclear (corrupt-on-deliver? slow-consumer?). `cache.hit_rate` and `cdn.hit_rate` are NOT degraded — only the latency/error parameters covered by the partial-failure model.
+
+### Acceptance highlights
+
+The lesson: **timeouts convert partial failure into clean failure.** Without a timeout on `app → db` (or one set well above degraded p99), an 8.2× slowdown bleeds into the upstream's tail latency. With the edge `timeout_ms` set tight (e.g. 200ms), upstream p99 stays bounded near the timeout — the request fails fast instead of hanging.
+
+### v1 simplifications
+
+- One dial, three modes — real partial failures have many flavors (slow tail only, error spikes, intermittent, geographic). Adding more would push complexity into the UI without changing the lesson.
+- Latency scaling applies to *both* p50 and p99 uniformly. Real "slow tail" degradation often raises p99 disproportionately. v1 keeps the math simple.
+- `cache_miss_storm` and `node_degraded` can both apply to a cache simultaneously — they touch different fields (hit_rate override vs. latency/failure_rate).
+- Visual: yellow tint + emoji badge (🐌 / ⚠️ / 🐌⚠️). Intentionally informal — degraded nodes are weird-and-flickering, not a stable state worth a polished icon.
+
+### Commits in this phase
+
+1. `prompt-6c-schema-degradation` — ChaosEventSpec.node_degraded variant + validator + DegradationMode type
+2. `prompt-6c-engine-degradation-state` — engine.degradedNodes + processEvent handlers + applyDegradation helper + BehaviorContext additions + snapshot population
+3. `prompt-6c-chaos-compilation` — chaos.ts compileChaosPlan emits node_degraded_start/_end
+4. `prompt-6c-behavior-integrations` — 7 behaviors wrap latency/failure sampling via applyDegradation
+5. `prompt-6c-canvas-visual` — yellow tint CSS + emoji badge overlay
+6. `prompt-6c-chaos-library-form` — enable node_degraded button + mode select + intensity slider
+7. `prompt-6c-determinism-test` — slow-degradation determinism test (12th)
+
+---
+
 ## Phase 6b — Circuit Breakers (complete)
 
 `npm test` → 11/11
