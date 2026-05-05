@@ -1,5 +1,65 @@
 # Progress
 
+## Phase 6d — Replication Lag (complete)
+
+`npm test` → 14/14
+`npm run typecheck` / `lint` / `build` clean
+
+### Files
+
+- Modified: `src/schema/{types,validators}.ts`, `src/sim/{types,engine,chaos}.ts`, `src/sim/behaviors/{types,shared,databaseBehavior}.ts`, `src/canvas/inspector/{forms/DatabaseParamsForm,fields/SelectField}.tsx`, `src/sim-ui/{ChaosTimeline,MetricsPanel}.tsx`, `src/sim/__tests__/determinism.test.ts`
+
+### Model
+
+A new schema field `read_routing: 'primary_only' | 'replica_only' | 'mixed'` (defaulting to `primary_only` when undefined) decides where a database read lands. With `replicas > 1` and a non-`primary_only` policy, each read samples a per-call replication lag from the existing log-normal `replication_lag_ms_p50/p99` distribution and stamps it onto the response payload as `stalenessMs` along with the chosen `replicaIndex`. Primary-routed reads emit no staleness fields — preserving pre-6d digests for backwards compatibility.
+
+A new chaos kind `replication_lag_spike` scales the lag distribution by `1 + intensity*9` for a window. Models a write storm / network jitter / replica catching up from snapshot. Engine-only event kinds `replication_lag_spike_start` / `_end` mutate `replicationLagOverrides: Map<NodeId, multiplier>`. Database behavior reads it via `ctx.getReplicationLagMultiplier(databaseNodeId)` when sampling.
+
+`forwardResponseUpstream` auto-propagates `stalenessMs` and `replicaIndex` from `ctx.triggeringEvent.payload` onto every reverse-path hop — so cache / app_server / load_balancer behaviors carry the staleness through to the originating client without per-behavior changes.
+
+### Acceptance highlights
+
+Acceptance #5 — `replication_lag_spike` on a 3-replica database under 50 RPS:
+
+  | window | p50 staleness | p99 staleness |
+  |---|---|---|
+  | 0–2000ms (baseline) | ~16ms | ~213ms |
+  | 2000–4000ms (10× spike) | ~200ms | ~1258ms |
+  | 4000–5000ms (after) | ~14ms | ~146ms |
+
+Staleness is a payload field, not an error — reads succeed, they're just out of date. The chart shows nothing dramatic; the cumulative panel surfaces `max staleness` (the lesson is that the failure mode is silent).
+
+### Backwards compat
+
+Designs created before 6d have `read_routing` undefined → treated as `primary_only` → no staleness fields in any payload → digest unchanged. Existing 13 determinism tests remain byte-identical; 14th covers replication.
+
+### Decisions and v1 simplifications
+
+**Field name** — kept `replication_lag_ms_p50/p99` (existing) instead of renaming to `repl_lag_ms_*` from the prompt. Avoids churning every fixture and JSON file that already references the long form.
+
+**Per-read lag sampling** — each read against a replica draws a fresh sample from the lag distribution. Real systems have continuously-replicating replicas where the lag-since-last-write fluctuates, but "each read sees a lag drawn from the distribution" captures the variability and tail behavior without modeling clock dynamics. The lesson it doesn't enable — "lag accumulates monotonically during a write storm" — is more advanced and not needed here.
+
+**Replicas counted as N total including primary** — replica indices range `[0, replicas-2]`. With `replicas=3`, two replicas exist, indices 0 and 1.
+
+**`mixed` is 50/50** — coin flip per read between primary and a uniformly-chosen replica. No write-time-aware skew.
+
+**Replicas don't respond slower** — replication lag affects the *staleness* of the data, not the response *latency*. Replicas use the same `read_latency_ms_p50/p99` as the primary. Treating them as slow would conflate two different concepts.
+
+**Writes** — all requests are still treated as reads. The write path (and read-your-writes / monotonic / causal / linearizable consistency) is reserved for Phase 6e.
+
+### Commits in this phase
+
+1. `prompt-6d-schema-replication` — `read_routing`, `ChaosEventSpec.replication_lag_spike`, validators
+2. `prompt-6d-engine-replica-lag` — engine state map, processEvent handlers, `getReplicationLagMultiplier`, new SimEventKinds
+3. `prompt-6d-chaos-lag-spike` — `compileChaosPlan` emits start/end with multiplier
+4. `prompt-6d-database-routing` — read routing + per-read lag sampling + staleness on payload, response-helper auto-propagation
+5. `prompt-6d-snapshot-staleness` — `windowMetrics.maxStalenessMs`
+6. `prompt-6d-ui-replication-form` — `read_routing` select + greying logic in DB inspector
+7. `prompt-6d-ui-chaos-form` — `📡 Replication lag spike` button + form (intensity slider, database picker, color/describe)
+8. `prompt-6d-determinism-test` — 14th test (replicas=3 / mixed / determinism + maxStaleness sanity)
+
+---
+
 ## Phase 6c — Partial Failures (complete)
 
 `npm test` → 13/13
