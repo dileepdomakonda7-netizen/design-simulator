@@ -114,9 +114,20 @@ export interface DatabaseParams {
   // Phase 6d replication lag. Default 'primary_only' when undefined preserves
   // pre-6d behavior (no staleness, replica params irrelevant).
   read_routing?: ReadRouting
+  // Phase 6e: consistency model. When set, dictates read routing entirely
+  // (overrides read_routing). When unset, falls back to read_routing — and
+  // when read_routing is also unset, defaults to 'primary_only' (preserves
+  // every pre-6e design's behavior unchanged).
+  consistency_model?: ConsistencyModel
 }
 
 export type ReadRouting = 'primary_only' | 'replica_only' | 'mixed'
+
+export type ConsistencyModel =
+  | 'linearizable' // every read goes to primary; staleness=0 always
+  | 'read_your_writes' // a client that wrote sees ≥ its own write on subsequent reads
+  | 'monotonic_reads' // a client never sees a read older than one it has already seen
+  | 'eventual' // any read can hit any replica with no checks (= replica_only)
 
 export interface QueueParams {
   max_depth: number // 0 = unbounded; > 0 = bounded, excess rejected per rejection_policy
@@ -272,6 +283,10 @@ export interface TrafficSource {
   // No per-source seed field. PRNG state for each source is derived deterministically
   // from the global seed and source id:  mulberry32(globalSeed ^ fnv1a32(source.id))
   // One global seed → one button → reproducible run. Users never configure per-source seeds.
+  /** Phase 6e: probability in [0, 1] that any given arrival is a write rather
+   *  than a read. Defaults to 0 (read-only). The traffic generator stamps
+   *  `causalContext.kind = 'write' | 'read'` on each arrival's SimRequest. */
+  write_ratio?: number
 }
 
 // ChaosEventSpec is user-facing config stored on Design.chaosPlan.

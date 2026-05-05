@@ -85,6 +85,9 @@ export const DatabaseParamsSchema = z.object({
   write_queue_max_depth: z.number().int().positive().optional(),
   rejection_policy: z.enum(['reject_newest']).optional(),
   read_routing: z.enum(['primary_only', 'replica_only', 'mixed']).optional(),
+  consistency_model: z
+    .enum(['linearizable', 'read_your_writes', 'monotonic_reads', 'eventual'])
+    .optional(),
 })
 
 export const QueueParamsSchema = z.object({
@@ -307,6 +310,7 @@ export const TrafficSourceSchema = z.object({
   label: z.string(),
   target_node_id: z.string().min(1),
   load_shape: LoadShapeSchema,
+  write_ratio: z.number().min(0).max(1).optional(),
 })
 
 // ─── Validation helpers ───────────────────────────────────────────────────────

@@ -57,6 +57,13 @@ export type SimEventKind =
   // via ctx.getReplicationLagMultiplier() when sampling per-read lag.
   | 'replication_lag_spike_start'
   | 'replication_lag_spike_end'
+  // 6e: informational marker emitted by the database read path when a
+  // consistency model would be violated by the chosen replica and the read
+  // is escalated to primary instead. Payload:
+  //   { model, expectedFreshnessMs, actualFreshnessMs, reason }
+  // Not an error — the read still succeeds at primary. Distinguishes the
+  // "we wanted a replica but had to fall back" case from regular routing.
+  | 'consistency_violation'
 
 /**
  * A scheduled event. Immutable once enqueued — behaviors create new events,
