@@ -101,6 +101,10 @@ export function forwardResponseUpstream(
   if (trigger) {
     if (typeof trigger['stalenessMs'] === 'number') auto['stalenessMs'] = trigger['stalenessMs']
     if (trigger['replicaIndex'] !== undefined) auto['replicaIndex'] = trigger['replicaIndex']
+    // 6e: propagate writeTimestamp from the database's request_complete back
+    // to the originating client via every response hop. Diagnostic only —
+    // engine reads it directly from the database's request_complete.
+    if (typeof trigger['writeTimestamp'] === 'number') auto['writeTimestamp'] = trigger['writeTimestamp']
   }
   return forwardResponseFor(ctx.request, ctx, success, { ...auto, ...(extras ?? {}) })
 }

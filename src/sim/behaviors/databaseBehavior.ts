@@ -1,43 +1,45 @@
 /**
  * Database behavior.
  *
- * Handles event kinds:
- *   - request_receive   (read or write; check capacity; schedule complete)
- *   - request_complete  (sample success per failure_rate; respond upstream)
- *   - request_response  (forward back if not a leaf)
+ * Phase 6e: read/write differentiation + consistency models.
+ *   - Reads (causalContext.kind === 'read', the default) flow through the
+ *     read-routing logic and emit `request_complete` with stalenessMs +
+ *     replicaIndex (when a replica is used).
+ *   - Writes (causalContext.kind === 'write') always go to primary, always
+ *     succeed (v1 simplification — no failure_rate / capacity check), and
+ *     emit `request_complete` carrying `writeTimestamp` (the virtual time
+ *     the write committed). The engine main loop reads this to populate
+ *     clientWriteTimestamps for read_your_writes enforcement.
  *
- * Reads ctx.nodeState keys:
- *   - inFlightReads      (number)
- *   - inFlightWrites     (number, always 0 in v1)
- *
- * Writes ctx.nodeState keys: inFlightReads, inFlightWrites
- *
- * Per-type semantics:
- *   Determines read vs write from `request.causalContext.kind`. v1 default
- *   is read (no behavior sets the kind yet). Capacity is enforced as a
- *   concurrent-in-flight cap against read_capacity_rps — a v1 simplification
- *   that conflates rate with concurrency. Phase 6 splits properly.
+ * Routing resolution (in priority order):
+ *   1. params.consistency_model set → it dictates routing entirely:
+ *        linearizable      → primary
+ *        eventual          → any replica
+ *        read_your_writes  → replica unless the originating client has
+ *                            a recent write to this DB AND the chosen
+ *                            replica's sampled lag is >= time-since-write.
+ *                            On too-stale: escalate to primary + emit a
+ *                            `consistency_violation` event for diagnostics.
+ *        monotonic_reads   → replica unless the originating client's
+ *                            read-freshness watermark exceeds the chosen
+ *                            replica's freshness. Same fallback semantics.
+ *   2. params.consistency_model unset, params.read_routing set → use it
+ *        (Phase 6d behavior).
+ *   3. Both unset → 'primary_only' (preserves every pre-6d design).
  *
  * v1 simplifications:
- *   - write_capacity_rps / write_latency_* / subtype are stored but not used.
- *   - All requests treated as reads. Write path is reserved for the
- *     consistency-models prompt (Phase 6e).
- *
- * Phase 6d additions:
- *   - read_routing decides per-read whether to hit primary or a replica.
- *     primary_only (default for backwards compat) → stalenessMs absent.
- *     replica_only / mixed → samples per-read replication lag from the
- *     log-normal lag distribution; stamps stalenessMs + replicaIndex on
- *     request_complete payload. forwardResponseUpstream auto-propagates
- *     these onto every hop of the reverse path.
- *   - Replication-lag spike chaos (replication_lag_spike) scales the lag
- *     distribution's p50/p99 while active, via getReplicationLagMultiplier.
+ *   - subtype / write_capacity_rps / write_queue_max_depth are stored but
+ *     not used. Writes bypass capacity entirely.
+ *   - RYW / MR sample ONE replica's lag and check it against the watermark.
+ *     If the chosen replica is too stale → escalate to primary. We do not
+ *     try the next replica — modeling per-replica continuous clocks is a
+ *     separate semester of complexity.
  */
 import { registerBehavior } from '../behaviorRegistry'
 import { sampleLatency } from '../latency'
 import { forwardResponseUpstream, rejectAndRespond } from './shared'
 import type { Behavior, NewEvent } from './types'
-import type { Node } from '@/schema/types'
+import type { ConsistencyModel, Node } from '@/schema/types'
 
 function getParams(node: Node): Extract<Node, { type: 'database' }>['params'] {
   if (node.type !== 'database') {
@@ -63,13 +65,37 @@ function getQueue(state: Record<string, unknown>): string[] {
   return q
 }
 
-function startProcessing(
+/**
+ * Resolve which routing applies for a read on this database. consistency_model
+ * (when set) wins; otherwise fall back to legacy `read_routing` (defaulting to
+ * 'primary_only' when both are unset — preserves every pre-6d design).
+ */
+function resolveRouting(
+  params: Extract<Node, { type: 'database' }>['params'],
+): {
+  mode: 'primary_only' | 'replica_only' | 'mixed'
+  model?: ConsistencyModel
+} {
+  const m = params.consistency_model
+  if (m) {
+    if (m === 'linearizable') return { mode: 'primary_only', model: m }
+    return { mode: 'replica_only', model: m }
+  }
+  return { mode: params.read_routing ?? 'primary_only' }
+}
+
+/**
+ * Read path. Picks primary vs replica per the resolved routing, samples the
+ * per-read replication lag if a replica is chosen, and applies the
+ * consistency-model fallback (RYW / MR) — escalating to primary and emitting
+ * a `consistency_violation` event when the chosen replica is too stale.
+ */
+function startReadProcessing(
   ctx: Parameters<Behavior>[0],
   requestId: string,
 ): NewEvent[] {
   const params = getParams(ctx.node)
   setInFlightReads(ctx.nodeState, getInFlightReads(ctx.nodeState) + 1)
-  // Phase 6c: scale read latency by an active 'slow' degradation on this node.
   const eff = ctx.applyDegradation(
     {
       p50: params.read_latency_ms_p50,
@@ -80,32 +106,61 @@ function startProcessing(
   )
   const latency = sampleLatency(eff.p50, eff.p99, ctx.rng)
 
-  // Phase 6d: read routing + staleness sampling. Skip if no replicas (≤1) or
-  // routing forces primary — both yield zero staleness with no payload bloat,
-  // preserving pre-6d digests for backwards compat. v1 simplification: lag is
-  // sampled fresh per read from a log-normal — we don't track per-replica
-  // clocks. Captures the variability and tail without modeling clock dynamics.
-  const routing = params.read_routing ?? 'primary_only'
-  const useReplicas = params.replicas > 1 && routing !== 'primary_only'
+  const { mode, model } = resolveRouting(params)
+  const hasReplicas = params.replicas > 1
+  const useReplicas = hasReplicas && mode !== 'primary_only'
+
   let stalenessMs = 0
   let replicaIndex: number | undefined
+  const violations: NewEvent[] = []
+
   if (useReplicas) {
-    const goReplica =
-      routing === 'replica_only' || (routing === 'mixed' && ctx.rng() < 0.5)
+    const goReplica = mode === 'replica_only' || (mode === 'mixed' && ctx.rng() < 0.5)
     if (goReplica) {
       // replicas count includes the primary — replica indices are 0..N-2.
       const replicaCount = params.replicas - 1
-      replicaIndex = Math.floor(ctx.rng() * replicaCount)
+      const idx = Math.floor(ctx.rng() * replicaCount)
       const lagMul = ctx.getReplicationLagMultiplier(ctx.node.id)
-      stalenessMs = sampleLatency(
+      const sampledLag = sampleLatency(
         params.replication_lag_ms_p50 * lagMul,
         params.replication_lag_ms_p99 * lagMul,
         ctx.rng,
       )
+
+      // 6e: RYW / MR fallback. ctx.request.originNodeId is the client.
+      const escalation = ctx.request
+        ? checkConsistencyEscalation(
+            model,
+            ctx.request.originNodeId,
+            ctx.node.id,
+            ctx.now,
+            sampledLag,
+            ctx,
+          )
+        : null
+      if (escalation) {
+        violations.push({
+          at: ctx.now,
+          kind: 'consistency_violation',
+          nodeId: ctx.node.id,
+          requestId,
+          payload: {
+            model: escalation.model,
+            expectedFreshnessMs: escalation.expectedFreshnessMs,
+            actualFreshnessMs: escalation.actualFreshnessMs,
+            reason: escalation.reason,
+          },
+        })
+        // Read escalates to primary. Drop replica idx + staleness.
+      } else {
+        replicaIndex = idx
+        stalenessMs = sampledLag
+      }
     }
   }
 
   return [
+    ...violations,
     {
       at: ctx.now + latency,
       kind: 'request_complete',
@@ -114,12 +169,92 @@ function startProcessing(
       payload: {
         processingTimeMs: latency,
         success: true,
-        ...(useReplicas
-          ? {
-              stalenessMs,
-              ...(replicaIndex !== undefined ? { replicaIndex } : {}),
-            }
+        // Stamp staleness fields ONLY when a replica was actually chosen —
+        // primary-fallback escalations and primary_only routing both omit
+        // them entirely (preserves backwards compat digests).
+        ...(replicaIndex !== undefined
+          ? { stalenessMs, replicaIndex }
           : {}),
+      },
+    },
+  ]
+}
+
+/**
+ * Returns null if the chosen replica is fresh enough for the active model
+ * (or no enforcement applies); returns escalation details when the read must
+ * fall back to primary.
+ */
+function checkConsistencyEscalation(
+  model: ConsistencyModel | undefined,
+  clientId: string,
+  databaseId: string,
+  now: number,
+  sampledLag: number,
+  ctx: Parameters<Behavior>[0],
+): {
+  model: ConsistencyModel
+  expectedFreshnessMs: number
+  actualFreshnessMs: number
+  reason: string
+} | null {
+  if (model === 'read_your_writes') {
+    const writeAt = ctx.getClientWriteTimestamp(clientId, databaseId)
+    if (writeAt === undefined) return null
+    // The replica is fresh through (now - sampledLag). To satisfy RYW we need
+    // (now - sampledLag) >= writeAt, i.e. sampledLag <= now - writeAt.
+    const budget = now - writeAt
+    if (sampledLag <= budget) return null
+    return {
+      model,
+      expectedFreshnessMs: budget,
+      actualFreshnessMs: sampledLag,
+      reason: 'replica_too_stale_for_ryw',
+    }
+  }
+  if (model === 'monotonic_reads') {
+    const watermark = ctx.getClientReadFreshness(clientId, databaseId)
+    if (watermark === undefined) return null
+    // Replica fresh through (now - sampledLag); need >= watermark.
+    const budget = now - watermark
+    if (sampledLag <= budget) return null
+    return {
+      model,
+      expectedFreshnessMs: budget,
+      actualFreshnessMs: sampledLag,
+      reason: 'replica_too_stale_for_mr',
+    }
+  }
+  return null
+}
+
+/**
+ * Phase 6e write path. Writes always go to primary, always succeed in v1,
+ * and bypass capacity (write_capacity_rps / queue) entirely. Emits
+ * `request_complete` carrying `writeTimestamp` so the engine can populate
+ * clientWriteTimestamps for the read_your_writes check.
+ */
+function startWriteProcessing(
+  ctx: Parameters<Behavior>[0],
+  requestId: string,
+): NewEvent[] {
+  const params = getParams(ctx.node)
+  const latency = sampleLatency(
+    params.write_latency_ms_p50,
+    params.write_latency_ms_p99,
+    ctx.rng,
+  )
+  const writeTimestamp = ctx.now + latency
+  return [
+    {
+      at: writeTimestamp,
+      kind: 'request_complete',
+      nodeId: ctx.node.id,
+      requestId,
+      payload: {
+        processingTimeMs: latency,
+        success: true,
+        writeTimestamp,
       },
     },
   ]
@@ -139,14 +274,15 @@ function startProcessing(
 const onRequestReceive: Behavior = (ctx) => {
   const params = getParams(ctx.node)
   if (!ctx.request) return []
-  // v1: always treat as a read unless causalContext.kind === 'write'.
   const kind = (ctx.request.causalContext['kind'] as string | undefined) ?? 'read'
-  if (kind !== 'read') {
-    // v1: write path is reserved; treat write as a read for now.
+
+  // 6e: writes bypass capacity / queue and run on the dedicated write path.
+  if (kind === 'write') {
+    return startWriteProcessing(ctx, ctx.request.id)
   }
 
   if (getInFlightReads(ctx.nodeState) < params.read_capacity_rps) {
-    return startProcessing(ctx, ctx.request.id)
+    return startReadProcessing(ctx, ctx.request.id)
   }
 
   const q = getQueue(ctx.nodeState)
@@ -189,7 +325,8 @@ const onRequestComplete: Behavior = (ctx) => {
 
   const q = getQueue(ctx.nodeState)
   const next = q.shift()
-  if (next !== undefined) out.push(...startProcessing(ctx, next))
+  // Queue path is reads-only — writes never enqueue (they bypass capacity).
+  if (next !== undefined) out.push(...startReadProcessing(ctx, next))
   return out
 }
 
