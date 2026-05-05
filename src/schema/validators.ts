@@ -232,6 +232,15 @@ export const ChaosEventSpecSchema = z.discriminatedUnion('kind', [
     at_ms: z.number().nonnegative(),
     duration_ms: z.number().positive(),
   }),
+  z.object({
+    id: z.string().min(1),
+    kind: z.literal('node_degraded'),
+    node_id: z.string().min(1),
+    at_ms: z.number().nonnegative(),
+    duration_ms: z.number().positive(),
+    mode: z.enum(['slow', 'errors', 'slow_and_errors']),
+    intensity: z.number().min(0).max(1),
+  }),
 ])
 
 export const DesignSchema = z.object({

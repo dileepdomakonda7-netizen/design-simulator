@@ -317,4 +317,22 @@ export type ChaosEventSpec =
       at_ms: number
       duration_ms: number
     }
-// 'node_degraded' is v2
+  | {
+      // Phase 6c: partial failure. The target node stays "up" but operates
+      // in a degraded mode for the window. Modes:
+      //   slow            — latency p50/p99 multiplied by 1 + intensity*9
+      //                     (intensity=1 → 10× slower).
+      //   errors          — failure_rate REPLACED by min(intensity, 1.0).
+      //   slow_and_errors — both apply.
+      // intensity is a single dial in [0..1]. The mode and intensity are
+      // fixed for the duration of the window.
+      id: string
+      kind: 'node_degraded'
+      node_id: string
+      at_ms: number
+      duration_ms: number
+      mode: DegradationMode
+      intensity: number
+    }
+
+export type DegradationMode = 'slow' | 'errors' | 'slow_and_errors'
