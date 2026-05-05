@@ -2,6 +2,7 @@ import { ModeToggle } from './ModeToggle'
 import { DesignNameEditor } from './DesignNameEditor'
 import { FileMenu } from './FileMenu'
 import { PenToolGroup } from './PenToolGroup'
+import { ShareButton } from './ShareButton'
 import { useDesignTemporalStore } from '@/store/designStore'
 import { useModeStore } from '@/store/modeStore'
 
@@ -55,7 +56,8 @@ export function Toolbar() {
         </>
       )}
 
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-2">
+        <ShareButton />
         <FileMenu />
       </div>
     </header>
