@@ -29,6 +29,7 @@ import { ExternalServiceNode } from '@/canvas/nodes/ExternalServiceNode'
 import { SketchyEdge } from '@/canvas/edges/SketchyEdge'
 
 import { LoadBars } from './LoadBars'
+import { Panel, useStore as useRFStore } from '@xyflow/react'
 
 const nodeTypes = {
   client: ClientNode,
@@ -66,6 +67,7 @@ function Inner() {
   const schemaEdges = useDesignStore((s) => s.design.edges)
   const viewport = useDesignStore((s) => s.design.viewport)
   const failedNodeIds = useFailedNodeIds()
+  const degradedNodeIds = useDegradedNodeIds()
 
   const rfNodes = useMemo<RFNode<{ schemaNode: Node }>[]>(
     () =>
@@ -74,9 +76,12 @@ function Inner() {
         if (failedNodeIds.has(n.id)) {
           return { ...base, className: 'sim-node-down' }
         }
+        if (degradedNodeIds.has(n.id)) {
+          return { ...base, className: 'sim-node-degraded' }
+        }
         return base
       }),
-    [schemaNodes, failedNodeIds],
+    [schemaNodes, failedNodeIds, degradedNodeIds],
   )
   const rfEdges = useMemo<RFEdge<{ schemaEdge: Edge }>[]>(
     () => schemaEdges.map(toRFEdge),
@@ -103,9 +108,66 @@ function Inner() {
         <Controls showInteractive={false} />
         <MiniMap pannable zoomable nodeColor={() => '#a3a3a3'} maskColor="rgba(0,0,0,0.06)" />
         <LoadBars />
+        <DegradedBadges />
       </ReactFlow>
       <DownNodeStyle />
     </div>
+  )
+}
+
+function useDegradedNodeIds(): Set<string> {
+  const latest = useSimStore((s) => s.latestSnapshot)
+  return useMemo(() => {
+    const out = new Set<string>()
+    if (!latest) return out
+    for (const [id, ns] of Object.entries(latest.nodes)) {
+      if (ns.state === 'degraded') out.add(id)
+    }
+    return out
+  }, [latest])
+}
+
+/**
+ * Phase 6c: emoji badge overlay for degraded nodes. Positioned in flow
+ * coordinates above each degraded node, parallel to LoadBars. Uses
+ * snapshot.nodes[n.id].degradationMode to pick the glyph.
+ */
+function DegradedBadges() {
+  const nodes = useDesignStore((s) => s.design.nodes)
+  const snapshot = useSimStore((s) => s.latestSnapshot)
+  const transform = useRFStore((s) => s.transform)
+  if (!snapshot) return null
+  const [tx, ty, tz] = transform
+
+  return (
+    <Panel position="top-left" className="!m-0 !inset-0 pointer-events-none">
+      <svg className="absolute inset-0 w-full h-full pointer-events-none overflow-visible">
+        <g transform={`translate(${tx} ${ty}) scale(${tz})`}>
+          {nodes.map((node) => {
+            const ns = snapshot.nodes[node.id]
+            if (!ns || ns.state !== 'degraded') return null
+            const mode = ns.degradationMode
+            const glyph =
+              mode === 'slow' ? '🐌' : mode === 'errors' ? '⚠️' : '🐌⚠️'
+            // Position badge at top-right corner of the node card (~180×80).
+            const x = node.position.x + 180 - 8
+            const y = node.position.y - 4
+            return (
+              <text
+                key={node.id}
+                x={x}
+                y={y}
+                fontSize={18}
+                textAnchor="end"
+                style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.25))' }}
+              >
+                {glyph}
+              </text>
+            )
+          })}
+        </g>
+      </svg>
+    </Panel>
   )
 }
 
@@ -132,6 +194,16 @@ function DownNodeStyle() {
           position: absolute;
           inset: -4px;
           border: 2px dashed #dc2626;
+          border-radius: 8px;
+          pointer-events: none;
+        }
+        .sim-node-degraded { filter: drop-shadow(0 0 5px rgba(234, 179, 8, 0.55)); }
+        .sim-node-degraded::after {
+          content: '';
+          position: absolute;
+          inset: -3px;
+          background: rgba(250, 204, 21, 0.18);
+          border: 1.5px dashed #ca8a04;
           border-radius: 8px;
           pointer-events: none;
         }`}
