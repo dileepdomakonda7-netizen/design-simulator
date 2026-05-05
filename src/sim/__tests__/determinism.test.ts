@@ -685,3 +685,55 @@ async function runUserScenario(
   await engine.run()
   return { events }
 }
+
+/**
+ * Phase 6c: a `node_degraded` chaos event in 'slow' mode at intensity 0.8
+ * scales the app_server's latency by 1 + 0.8*9 = 8.2× during the window.
+ * Two runs at seed=42 must produce byte-identical event streams — the
+ * degradation pulls samples from the per-node RNG deterministically.
+ */
+describe('phase 6c partial failures', () => {
+  async function runDegraded(seed: number): Promise<{ events: SimEvent[] }> {
+    const events: SimEvent[] = []
+    const config: SimRunConfig = {
+      design: fixtureDesign(),
+      traffic: [
+        {
+          id: 'src',
+          label: 'T',
+          target_node_id: 'client-1',
+          load_shape: { kind: 'constant', rps: 10 },
+        },
+      ],
+      chaos: [
+        {
+          id: 'd1',
+          kind: 'node_degraded',
+          node_id: 'app-1',
+          at_ms: 500,
+          duration_ms: 1200,
+          mode: 'slow',
+          intensity: 0.8,
+        },
+      ],
+      durationMs: 2500,
+      seed,
+      snapshotIntervalMs: 250,
+    }
+    const engine = new SimulationEngine(config, () => {}, (e) => events.push(e))
+    await engine.run()
+    return { events }
+  }
+
+  it('slow degradation: two seed=42 runs produce identical event streams', async () => {
+    const a = await runDegraded(42)
+    const b = await runDegraded(42)
+    expect(a.events.length).toBe(b.events.length)
+    expect(a.events).toEqual(b.events)
+    const starts = a.events.filter((e) => e.kind === 'node_degraded_start')
+    const ends = a.events.filter((e) => e.kind === 'node_degraded_end')
+    expect(starts.length).toBe(1)
+    expect(ends.length).toBe(1)
+    expect(computeDigest(a.events)).toBe(computeDigest(b.events))
+  })
+})
