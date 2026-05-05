@@ -94,6 +94,18 @@ export class SimulationEngine {
   // replication_lag_spike_start, cleared on _end. Database behavior reads
   // it via ctx.getReplicationLagMultiplier when sampling per-read lag.
   private replicationLagOverrides = new Map<string, number>()
+  // 6e: per-(client, database) virtual time of the client's most recent
+  // committed write. Updated when a write_complete event passes through the
+  // engine's main loop. Read by the database behavior to enforce
+  // read_your_writes ("a client must see at least its own most recent write").
+  private clientWriteTimestamps = new Map<string, Map<string, number>>()
+  // 6e: per-(client, database) virtual time of the freshest data this
+  // client's reads have ever reflected. Updated on read completes (when
+  // payload.stalenessMs is present, freshness = at - stalenessMs).
+  // Monotonically increases — never goes backward (that's the whole point).
+  // Read by the database behavior to enforce monotonic_reads ("a client
+  // must never see data older than what it has already seen").
+  private clientReadFreshness = new Map<string, Map<string, number>>()
 
   // ─── Pause / speed (4c) ───────────────────────────────────────────────────
   private paused = false
@@ -175,6 +187,10 @@ export class SimulationEngine {
     for (const ev of traffic.events) {
       this.queue.push(ev)
       if (ev.kind === 'request_arrival' && ev.requestId && ev.nodeId) {
+        // 6e: propagate optional `kind: 'read'|'write'` from the arrival
+        // payload (set by traffic generator when write_ratio > 0) onto the
+        // SimRequest's causalContext so the database can branch on it.
+        const ap = ev.payload as { kind?: 'read' | 'write' } | undefined
         this.requests.set(ev.requestId, {
           id: ev.requestId,
           arrivedAt: ev.at,
@@ -182,7 +198,7 @@ export class SimulationEngine {
           path: [ev.nodeId],
           attempt: 0,
           sessionId: ev.requestId,
-          causalContext: {},
+          causalContext: ap?.kind ? { kind: ap.kind } : {},
         })
       }
     }
@@ -376,6 +392,10 @@ export class SimulationEngine {
 
     // (c) In-flight bookkeeping (BEFORE behavior so it sees current values).
     this.updateInFlight(ev)
+    // 6e: per-client write/read state tracking. Done in the engine, not in
+    // the database behavior, so the cross-client view is consistent
+    // regardless of which behavior emits the event.
+    this.updateClientConsistencyState(ev, request)
 
     // (d) If this is a request_receive at a currently-failed node (chaos),
     //     short-circuit: emit a request_reject and skip behavior dispatch.
@@ -433,6 +453,10 @@ export class SimulationEngine {
         applyDegradation: (base, id) => this.applyDegradation(base, id),
         getReplicationLagMultiplier: (id) =>
           this.replicationLagOverrides.get(id) ?? 1,
+        getClientWriteTimestamp: (cId, dbId) =>
+          this.clientWriteTimestamps.get(cId)?.get(dbId),
+        getClientReadFreshness: (cId, dbId) =>
+          this.clientReadFreshness.get(cId)?.get(dbId),
         ...(request ? { request } : {}),
       }
 
@@ -494,6 +518,52 @@ export class SimulationEngine {
       case 'request_timeout':
         m.set(ev.nodeId, Math.max(0, (m.get(ev.nodeId) ?? 0) - 1))
         break
+    }
+  }
+
+  /**
+   * Phase 6e: track per-client state used to enforce read_your_writes and
+   * monotonic_reads.
+   *
+   * On a database's `request_complete` event:
+   *   - If the payload has `writeTimestamp`, this was a write — record it on
+   *     `clientWriteTimestamps[originatingClient][database]`.
+   *   - If the payload has `stalenessMs`, this was a read against a replica —
+   *     compute `freshness = at - stalenessMs` and update
+   *     `clientReadFreshness[originatingClient][database]` if greater than
+   *     the current value (monotonic — never decreases).
+   *
+   * Both lookups key off `request.originNodeId`, which the engine already
+   * tracks. `nodeId` on the event is the database (where the complete fired).
+   */
+  private updateClientConsistencyState(
+    ev: SimEvent,
+    request: SimRequest | undefined,
+  ): void {
+    if (ev.kind !== 'request_complete' || !ev.nodeId || !request) return
+    const p = ev.payload as
+      | { writeTimestamp?: number; stalenessMs?: number }
+      | undefined
+    if (!p) return
+    const clientId = request.originNodeId
+    const dbId = ev.nodeId
+    if (typeof p.writeTimestamp === 'number') {
+      let perDb = this.clientWriteTimestamps.get(clientId)
+      if (!perDb) {
+        perDb = new Map()
+        this.clientWriteTimestamps.set(clientId, perDb)
+      }
+      perDb.set(dbId, p.writeTimestamp)
+    }
+    if (typeof p.stalenessMs === 'number') {
+      const freshness = ev.at - p.stalenessMs
+      let perDb = this.clientReadFreshness.get(clientId)
+      if (!perDb) {
+        perDb = new Map()
+        this.clientReadFreshness.set(clientId, perDb)
+      }
+      const current = perDb.get(dbId) ?? -Infinity
+      if (freshness > current) perDb.set(dbId, freshness)
     }
   }
 

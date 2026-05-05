@@ -65,6 +65,21 @@ export interface BehaviorContext {
    *  `databaseNodeId`, or 1 if no spike is active. Database read path
    *  multiplies p50/p99 of the lag distribution by this before sampling. */
   getReplicationLagMultiplier: (databaseNodeId: string) => number
+  /** Phase 6e: virtual-time of the originating client's most recent write
+   *  to `databaseNodeId`, or undefined if the client has never written
+   *  there. Used by the read_your_writes consistency check. */
+  getClientWriteTimestamp: (
+    clientNodeId: string,
+    databaseNodeId: string,
+  ) => number | undefined
+  /** Phase 6e: virtual-time floor of the freshest data the originating
+   *  client has ever observed via reads against `databaseNodeId`, or
+   *  undefined if the client has not read there. Used by the
+   *  monotonic_reads consistency check. */
+  getClientReadFreshness: (
+    clientNodeId: string,
+    databaseNodeId: string,
+  ) => number | undefined
 }
 
 /**
