@@ -247,6 +247,14 @@ export function MetricsPanel() {
             color="text-sky-700"
             suffix="ms"
           />
+          {/* Phase 6e: cumulative count of consistency_violation events. Each
+              one is a read that escalated from a too-stale replica to primary
+              under read_your_writes / monotonic_reads. Informational. */}
+          <Stat
+            label="consistency violations"
+            value={useCumConsistencyViolations()}
+            color="text-amber-700"
+          />
         </div>
       </div>
     </div>
@@ -305,6 +313,17 @@ function pickInterestingEvent(
  * Read off the events array directly so we don't have to wire a separate counter
  * through the engine snapshot for what is fundamentally a derived metric.
  */
+/** Phase 6e: cumulative count of `consistency_violation` events. Cheap to
+ *  derive — keeps engine snapshots free of the counter. */
+function useCumConsistencyViolations(): number {
+  const events = useSimStore((s) => s.events)
+  return useMemo(() => {
+    let n = 0
+    for (const e of events) if (e.kind === 'consistency_violation') n++
+    return n
+  }, [events])
+}
+
 function useCumBreakerRejections(): number {
   const events = useSimStore((s) => s.events)
   return useMemo(() => {

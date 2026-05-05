@@ -25,6 +25,13 @@ const READ_ROUTING = [
   { value: 'mixed', label: 'Mixed (50/50)' },
 ] as const
 
+const CONSISTENCY_MODELS = [
+  { value: 'linearizable', label: 'Linearizable (always primary)' },
+  { value: 'read_your_writes', label: 'Read-your-writes' },
+  { value: 'monotonic_reads', label: 'Monotonic reads' },
+  { value: 'eventual', label: 'Eventual (any replica)' },
+] as const
+
 export function DatabaseParamsForm({ node }: Props) {
   const update = useDesignStore((s) => s.updateNodeParams)
   const isAsync = node.params.replication_mode === 'async'
@@ -70,9 +77,23 @@ export function DatabaseParamsForm({ node }: Props) {
         value={node.params.read_routing ?? 'primary_only'}
         options={READ_ROUTING}
         onChange={(v) => update(node.id, 'database', { read_routing: v })}
-        disabled={!hasReplicas}
-        hint="Replicas > 1 required. Replica reads return stale data (stalenessMs)."
+        disabled={!hasReplicas || node.params.consistency_model !== undefined}
+        hint={
+          node.params.consistency_model
+            ? 'Overridden by consistency_model'
+            : 'Replicas > 1 required. Replica reads return stale data (stalenessMs).'
+        }
       />
+      {hasReplicas && (
+        <SelectField
+          label="Consistency"
+          value={node.params.consistency_model ?? 'eventual'}
+          options={CONSISTENCY_MODELS}
+          onChange={(v) => update(node.id, 'database', { consistency_model: v })}
+          disabled={!hasReplicas}
+          hint="Overrides read routing. linearizable=primary; eventual=any replica; RYW/MR escalate to primary when a replica is too stale."
+        />
+      )}
       <NumberField
         label="Repl. lag p50"
         value={node.params.replication_lag_ms_p50}

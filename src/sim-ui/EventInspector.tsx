@@ -162,5 +162,7 @@ function kindColor(kind: SimEvent['kind']): string {
   if (kind === 'node_failure' || kind === 'partition_start') return 'text-red-700'
   if (kind === 'request_response') return 'text-green-700'
   if (kind === 'request_arrival') return 'text-blue-700'
+  // 6e: informational, not an error — yellow/amber.
+  if (kind === 'consistency_violation') return 'text-amber-700'
   return 'text-neutral-700'
 }
