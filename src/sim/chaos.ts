@@ -148,6 +148,28 @@ export function compileChaosPlan(
         }
         break
       }
+      case 'node_degraded': {
+        // Phase 6c: a window during which the target node returns degraded
+        // responses (slower, more errors, or both). Engine processes start
+        // to insert into degradedNodes map, end to remove. Behaviors read
+        // it via ctx.applyDegradation when computing effective params.
+        const endsAt = clampEnd(spec.at_ms, spec.duration_ms)
+        events.push({
+          id: nextEventId++,
+          at: spec.at_ms,
+          kind: 'node_degraded_start',
+          nodeId: spec.node_id,
+          payload: { mode: spec.mode, intensity: spec.intensity, endsAt },
+        })
+        events.push({
+          id: nextEventId++,
+          at: endsAt,
+          kind: 'node_degraded_end',
+          nodeId: spec.node_id,
+          payload: {},
+        })
+        break
+      }
       case 'saturate_node': {
         // Phase 6a: drive a target node to saturation. Emit synthetic
         // request_receive events directly at the target — no upstream chain.
