@@ -19,9 +19,17 @@ const REPLICATION_MODES = [
   { value: 'async', label: 'Asynchronous' },
 ] as const
 
+const READ_ROUTING = [
+  { value: 'primary_only', label: 'Primary only' },
+  { value: 'replica_only', label: 'Replica only' },
+  { value: 'mixed', label: 'Mixed (50/50)' },
+] as const
+
 export function DatabaseParamsForm({ node }: Props) {
   const update = useDesignStore((s) => s.updateNodeParams)
   const isAsync = node.params.replication_mode === 'async'
+  const hasReplicas = node.params.replicas > 1
+  const replicationActive = hasReplicas && isAsync
   return (
     <div className="space-y-1.5">
       <SelectField
@@ -57,14 +65,22 @@ export function DatabaseParamsForm({ node }: Props) {
         options={REPLICATION_MODES}
         onChange={(v) => update(node.id, 'database', { replication_mode: v })}
       />
+      <SelectField
+        label="Read routing"
+        value={node.params.read_routing ?? 'primary_only'}
+        options={READ_ROUTING}
+        onChange={(v) => update(node.id, 'database', { read_routing: v })}
+        disabled={!hasReplicas}
+        hint="Replicas > 1 required. Replica reads return stale data (stalenessMs)."
+      />
       <NumberField
         label="Repl. lag p50"
         value={node.params.replication_lag_ms_p50}
         onChange={(v) => update(node.id, 'database', { replication_lag_ms_p50: v })}
         min={0}
         suffix="ms"
-        disabled={!isAsync}
-        hint="Only meaningful with async replication"
+        disabled={!replicationActive}
+        hint="Only meaningful with async replication AND replicas > 1"
       />
       <NumberField
         label="Repl. lag p99"
@@ -72,7 +88,7 @@ export function DatabaseParamsForm({ node }: Props) {
         onChange={(v) => update(node.id, 'database', { replication_lag_ms_p99: v })}
         min={0}
         suffix="ms"
-        disabled={!isAsync}
+        disabled={!replicationActive}
       />
       <NumberField
         label="Read latency p50"

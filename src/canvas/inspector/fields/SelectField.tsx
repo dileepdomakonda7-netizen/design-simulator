@@ -4,6 +4,7 @@ interface Props<T extends string> {
   options: readonly { value: T; label: string }[]
   onChange: (v: T) => void
   disabled?: boolean
+  hint?: string
 }
 
 export function SelectField<T extends string>({
@@ -12,10 +13,11 @@ export function SelectField<T extends string>({
   options,
   onChange,
   disabled,
+  hint,
 }: Props<T>) {
   return (
     <label className="flex items-center gap-2 text-xs text-neutral-700">
-      <span className="w-32 shrink-0 truncate">{label}</span>
+      <span className="w-32 shrink-0 truncate" title={hint ?? label}>{label}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value as T)}
