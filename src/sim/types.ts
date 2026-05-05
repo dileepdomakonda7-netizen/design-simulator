@@ -39,6 +39,12 @@ export type SimEventKind =
   | 'cache_miss_storm_end'
   | 'traffic_spike_start'
   | 'traffic_spike_end'
+  // 6b: per-edge circuit breaker state transitions, emitted by behaviors
+  // when an outcome observation crosses a state boundary. Informational —
+  // no other behavior reacts to these.
+  | 'circuit_breaker_opened'
+  | 'circuit_breaker_closed'
+  | 'circuit_breaker_half_open'
 
 /**
  * A scheduled event. Immutable once enqueued — behaviors create new events,
@@ -140,12 +146,24 @@ export interface CumulativeMetrics {
   totalRequestsTimedOut: number
 }
 
+/**
+ * Phase 6b: per-edge breaker state for the canvas to render. `cbState` is
+ * undefined when the edge has no circuit breaker enabled.
+ */
+export interface EdgeSnapshot {
+  edgeId: string
+  cbState?: 'closed' | 'open' | 'half_open'
+  failureRate: number // over the breaker's current window (0 if window empty)
+  rejectionsByBreakerInWindow: number
+}
+
 export interface SimSnapshot {
   /** Virtual time (ms) at which this snapshot was taken. */
   at: number
   /** Snapshot sequence number; starts at 0. */
   seq: number
   nodes: Record<string, NodeSnapshot>
+  edges: Record<string, EdgeSnapshot>
   windowMetrics: WindowMetrics
   cumulativeMetrics: CumulativeMetrics
 }

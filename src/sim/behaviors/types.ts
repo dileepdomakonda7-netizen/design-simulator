@@ -47,6 +47,10 @@ export interface BehaviorContext {
   /** Look up an in-flight request by id. Phase 6a reject_oldest needs the
    *  displaced request's `path` to emit a failure response to ITS upstream. */
   getRequest: (id: RequestId) => SimRequest | undefined
+  /** Phase 6b: mutable per-edge state, lazily created on first access. Used
+   *  for circuit breaker windows / open-time / probe-in-flight bits. Per-
+   *  (simulation, edge), reset on each new run. */
+  getEdgeState: (edgeId: string) => Record<string, unknown>
 }
 
 /**

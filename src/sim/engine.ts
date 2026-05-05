@@ -11,9 +11,11 @@ import { VirtualClock } from './virtualClock'
 import { EventLog } from './eventLog'
 import { generateTraffic } from './trafficGenerator'
 import { compileChaosPlan } from './chaos'
+import { readSnapshot as readCBSnapshot } from './circuitBreaker'
 import { getBehavior } from './behaviorRegistry'
 import { subStream } from './prng'
 import type { BehaviorContext, NewEvent } from './behaviors/types'
+import type { EdgeSnapshot } from './types'
 
 /**
  * Discrete-event simulation engine.
@@ -58,6 +60,9 @@ export class SimulationEngine {
   private log = new EventLog()
   private requests = new Map<RequestId, SimRequest>()
   private nodeState = new Map<string, Record<string, unknown>>()
+  // Phase 6b: per-edge mutable scratch (circuit-breaker state). Keyed by
+  // Edge.id. Lazily created by getOrInitEdgeState on first access.
+  private edgeState = new Map<string, Record<string, unknown>>()
   private inFlightByNodeId = new Map<string, number>()
   private nextEventId: EventId = 0
   private nextRequestNumber = 0
@@ -382,6 +387,7 @@ export class SimulationEngine {
         isPartitioned: (from, to) => this.isPartitioned(from, to),
         getCacheHitRateOverride: (id) => this.cacheHitRateOverrides.get(id),
         getRequest: (id) => this.requests.get(id),
+        getEdgeState: (id) => this.getOrInitEdgeState(id),
         ...(request ? { request } : {}),
       }
 
@@ -451,6 +457,16 @@ export class SimulationEngine {
     if (!s) {
       s = {}
       this.nodeState.set(nodeId, s)
+    }
+    return s
+  }
+
+  /** Phase 6b: mutable per-edge state, exposed to behaviors via context. */
+  private getOrInitEdgeState(edgeId: string): Record<string, unknown> {
+    let s = this.edgeState.get(edgeId)
+    if (!s) {
+      s = {}
+      this.edgeState.set(edgeId, s)
     }
     return s
   }
@@ -547,9 +563,24 @@ export class SimulationEngine {
       }
     }
 
+    // Phase 6b: per-edge circuit breaker snapshot view. Edges without a
+    // breaker (or where no requests have flowed yet) get cbState undefined.
+    const edgeEntries: Record<string, EdgeSnapshot> = {}
+    for (const edge of this.config.design.edges) {
+      const state = this.edgeState.get(edge.id)
+      const cbSnap = state ? readCBSnapshot(state, at) : null
+      edgeEntries[edge.id] = {
+        edgeId: edge.id,
+        ...(cbSnap ? { cbState: cbSnap.state } : {}),
+        failureRate: cbSnap?.failureRate ?? 0,
+        rejectionsByBreakerInWindow: cbSnap?.rejectionsInWindow ?? 0,
+      }
+    }
+
     return {
       at,
       seq: this.snapshotSeq++,
+      edges: edgeEntries,
       nodes: Object.fromEntries(
         this.config.design.nodes.map((n) => {
           const state = this.nodeState.get(n.id)
