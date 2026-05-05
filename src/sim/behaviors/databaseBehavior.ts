@@ -19,9 +19,19 @@
  *   that conflates rate with concurrency. Phase 6 splits properly.
  *
  * v1 simplifications:
- *   - replicas / write_capacity_rps / write_latency_*  / replication_mode /
- *     replication_lag_*  / subtype are stored but not used.
- *   - All reads always come from the primary.
+ *   - write_capacity_rps / write_latency_* / subtype are stored but not used.
+ *   - All requests treated as reads. Write path is reserved for the
+ *     consistency-models prompt (Phase 6e).
+ *
+ * Phase 6d additions:
+ *   - read_routing decides per-read whether to hit primary or a replica.
+ *     primary_only (default for backwards compat) → stalenessMs absent.
+ *     replica_only / mixed → samples per-read replication lag from the
+ *     log-normal lag distribution; stamps stalenessMs + replicaIndex on
+ *     request_complete payload. forwardResponseUpstream auto-propagates
+ *     these onto every hop of the reverse path.
+ *   - Replication-lag spike chaos (replication_lag_spike) scales the lag
+ *     distribution's p50/p99 while active, via getReplicationLagMultiplier.
  */
 import { registerBehavior } from '../behaviorRegistry'
 import { sampleLatency } from '../latency'
@@ -69,13 +79,48 @@ function startProcessing(
     ctx.node.id,
   )
   const latency = sampleLatency(eff.p50, eff.p99, ctx.rng)
+
+  // Phase 6d: read routing + staleness sampling. Skip if no replicas (≤1) or
+  // routing forces primary — both yield zero staleness with no payload bloat,
+  // preserving pre-6d digests for backwards compat. v1 simplification: lag is
+  // sampled fresh per read from a log-normal — we don't track per-replica
+  // clocks. Captures the variability and tail without modeling clock dynamics.
+  const routing = params.read_routing ?? 'primary_only'
+  const useReplicas = params.replicas > 1 && routing !== 'primary_only'
+  let stalenessMs = 0
+  let replicaIndex: number | undefined
+  if (useReplicas) {
+    const goReplica =
+      routing === 'replica_only' || (routing === 'mixed' && ctx.rng() < 0.5)
+    if (goReplica) {
+      // replicas count includes the primary — replica indices are 0..N-2.
+      const replicaCount = params.replicas - 1
+      replicaIndex = Math.floor(ctx.rng() * replicaCount)
+      const lagMul = ctx.getReplicationLagMultiplier(ctx.node.id)
+      stalenessMs = sampleLatency(
+        params.replication_lag_ms_p50 * lagMul,
+        params.replication_lag_ms_p99 * lagMul,
+        ctx.rng,
+      )
+    }
+  }
+
   return [
     {
       at: ctx.now + latency,
       kind: 'request_complete',
       nodeId: ctx.node.id,
       requestId,
-      payload: { processingTimeMs: latency, success: true },
+      payload: {
+        processingTimeMs: latency,
+        success: true,
+        ...(useReplicas
+          ? {
+              stalenessMs,
+              ...(replicaIndex !== undefined ? { replicaIndex } : {}),
+            }
+          : {}),
+      },
     },
   ]
 }

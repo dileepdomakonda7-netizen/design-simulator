@@ -54,6 +54,7 @@ export function forwardResponseFor(
   request: SimRequest,
   ctx: Pick<BehaviorContext, 'node' | 'incoming' | 'rng' | 'now'>,
   success: boolean,
+  extras?: Record<string, unknown>,
 ): NewEvent[] {
   const myIndex = request.path.indexOf(ctx.node.id)
   if (myIndex <= 0) return [] // origin or off-path; finalize here
@@ -73,6 +74,7 @@ export function forwardResponseFor(
         fromNodeId: ctx.node.id,
         success,
         durationMs: ctx.now - request.arrivedAt,
+        ...(extras ?? {}),
       },
     },
   ]
@@ -81,13 +83,26 @@ export function forwardResponseFor(
 /**
  * Emit a request_response toward the previous hop on `ctx.request`'s path.
  * Returns [] at origin (engine drops the request from in-flight tracking).
+ *
+ * Phase 6d: auto-propagates `stalenessMs` and `replicaIndex` from
+ * ctx.triggeringEvent.payload onto the new response. The database stamps
+ * these onto the request_complete payload it emits; every hop on the
+ * reverse path then carries them upstream without per-behavior changes.
+ * Caller can override / extend via `extras`.
  */
 export function forwardResponseUpstream(
   ctx: BehaviorContext,
   success: boolean,
+  extras?: Record<string, unknown>,
 ): NewEvent[] {
   if (!ctx.request) return []
-  return forwardResponseFor(ctx.request, ctx, success)
+  const auto: Record<string, unknown> = {}
+  const trigger = ctx.triggeringEvent.payload as Record<string, unknown> | undefined
+  if (trigger) {
+    if (typeof trigger['stalenessMs'] === 'number') auto['stalenessMs'] = trigger['stalenessMs']
+    if (trigger['replicaIndex'] !== undefined) auto['replicaIndex'] = trigger['replicaIndex']
+  }
+  return forwardResponseFor(ctx.request, ctx, success, { ...auto, ...(extras ?? {}) })
 }
 
 /**
