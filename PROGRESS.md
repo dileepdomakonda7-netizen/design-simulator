@@ -1,5 +1,71 @@
 # Progress
 
+## Phase 6e — Consistency Models (complete)
+
+**Phase 6 is complete.**
+
+`npm test` → 16/16
+`npm run typecheck` / `lint` / `build` clean
+
+### Files
+
+- Modified: `src/schema/{types,validators}.ts`, `src/sim/{types,engine,trafficGenerator}.ts`, `src/sim/behaviors/{types,shared,databaseBehavior}.ts`, `src/canvas/inspector/forms/DatabaseParamsForm.tsx`, `src/sim-ui/{MetricsPanel,EventInspector}.tsx`, `src/sim/__tests__/determinism.test.ts`
+
+### Model
+
+Four consistency models on `DatabaseParams.consistency_model`:
+
+  - **linearizable** — every read goes to primary; staleness=0.
+  - **eventual** — any read can hit any replica with no checks.
+  - **read_your_writes (RYW)** — a client that wrote sees ≥ its own write on subsequent reads.
+  - **monotonic_reads (MR)** — a client never sees a read older than one it has already seen.
+
+When `consistency_model` is set, it dictates routing entirely (overrides legacy `read_routing`). When unset, falls back to `read_routing` — and when both are unset, defaults to `primary_only` (preserving every pre-6e design).
+
+The engine maintains two cross-client state maps:
+
+  - `clientWriteTimestamps[client][db]` — virtual time of the client's most recent write to that DB. Updated by the engine main loop on every `request_complete` whose payload carries `writeTimestamp`.
+  - `clientReadFreshness[client][db]` — the freshest data the client has ever observed via reads against that DB (= `at - stalenessMs` of the most recent qualifying read). Monotonically increasing.
+
+The database read path branches on the resolved model. For RYW / MR it samples one replica's lag; if the replica is too stale to satisfy the watermark, the read **escalates to primary** and emits a `consistency_violation` event for diagnostics. The escalation is not an error — the read still succeeds.
+
+### Acceptance highlights
+
+50 RPS, replicas=3, repl_lag p50=50/p99=500, write_ratio=0.3, 5s window, seed=42:
+
+  | model | violations | replica responses | reads to primary |
+  |---|---|---|---|
+  | linearizable | 0 | 0 / 250 | 250 |
+  | eventual | 0 | 163 / 250 | 87 (the writes) |
+  | read_your_writes | **84** | 79 / 250 | ~171 |
+
+The lesson: under RYW, ~84 of ~163 post-write reads escalate to primary — exactly the cost of "I wrote X, I should see X."
+
+### Decisions and v1 simplifications
+
+**Override resolution kept backwards-compatible.** The user's prompt suggested defaulting an unset `consistency_model` to `'eventual'`. That would silently change every pre-6d design's routing from primary-only to replica-only. Instead: unset `consistency_model` means "use legacy `read_routing`," and unset `read_routing` still defaults to `primary_only`. New designs that want eventual semantics must opt in explicitly (`consistency_model: 'eventual'`).
+
+**Single-replica fallback for RYW / MR.** The behavior samples one candidate replica's lag and either accepts it or escalates to primary. Real systems would try the next replica before giving up. Modeling that requires per-replica continuous clocks (each replica's `replicatedThroughTime` advancing on a real schedule) — significantly more complexity for a marginal lesson improvement. Documented as a v1 simplification.
+
+**Writes always succeed and bypass capacity.** v1 doesn't model write contention, replication-ack failures, or write timeouts. Writes route to primary, sample `write_latency_ms_p50/p99`, emit `request_complete` carrying `writeTimestamp`. Adequate for the consistency lessons; not realistic for capacity planning.
+
+**Per-client tracking lives in the engine, not the database behavior.** The behavior emits the relevant events (`request_complete` with `writeTimestamp` or `stalenessMs`); the engine's main loop reads them in `updateClientConsistencyState`. This keeps the global cross-client view consistent regardless of which behavior emits the event — and means future per-client features (vector clocks, session tokens) live in one place.
+
+**No "use legacy read_routing" sentinel option in the consistency_model select.** The user's prompt described a 5-option select where the 5th option clears the field. exactOptionalPropertyTypes + `Partial<>` prevents writing `undefined` through the existing `updateNodeParams` helper. Rather than add a new store action for this single case, the UI exposes the 4 explicit options. To "use legacy" you start fresh / edit JSON; to behave like "no enforcement" you pick `eventual` (functionally equivalent).
+
+**Field for read/write classification is `causalContext.kind`.** Already a discriminator slot from Phase 4b; now actively populated by the traffic generator when `TrafficSource.write_ratio > 0`. Pre-6e traffic sources don't set `write_ratio` → no rng consumed → no payload bloat → digests unchanged.
+
+### Commits in this phase
+
+1. `prompt-6e-schema-consistency` — `consistency_model` + `TrafficSource.write_ratio` + `consistency_violation` SimEventKind + validators
+2. `prompt-6e-engine-client-state` — `clientWriteTimestamps` + `clientReadFreshness` maps + BehaviorContext getters
+3. `prompt-6e-engine-event-tracking` — main-loop `updateClientConsistencyState` + arrival kind propagation + traffic-generator write_ratio
+4. `prompt-6e-database-consistency` — read-path consistency branching + write path + violation events + `forwardResponseUpstream` writeTimestamp auto-prop
+5. `prompt-6e-ui-consistency-form` — DB inspector consistency_model select + violation badge + cumulative count
+6. `prompt-6e-determinism-test` — 15th & 16th tests (RYW determinism, eventual no-violations sanity)
+
+---
+
 ## Phase 6d — Replication Lag (complete)
 
 `npm test` → 14/14
