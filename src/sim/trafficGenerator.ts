@@ -36,14 +36,24 @@ export function generateTraffic(
 
   for (const source of traffic) {
     const arrivalTimes = scheduleArrivals(source, durationMs, globalSeed)
+    // 6e: optional read/write classification per arrival. Only consumes rng
+    // when write_ratio > 0 — pre-6e sources keep their event payloads byte-
+    // identical, preserving every prior digest.
+    const writeRatio = source.write_ratio ?? 0
+    const writeRng =
+      writeRatio > 0 ? subStream(globalSeed, `traffic-write:${source.id}`) : undefined
     for (const t of arrivalTimes) {
+      const kind = writeRng ? (writeRng() < writeRatio ? 'write' : 'read') : undefined
       events.push({
         id: nextEventId++,
         at: t,
         kind: 'request_arrival',
         nodeId: source.target_node_id,
         requestId: `req-${nextRequestNumber++}`,
-        payload: { trafficSourceId: source.id },
+        payload: {
+          trafficSourceId: source.id,
+          ...(kind ? { kind } : {}),
+        },
       })
     }
   }
