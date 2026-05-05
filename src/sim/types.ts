@@ -51,6 +51,12 @@ export type SimEventKind =
   // the engine's degradedNodes via ctx.applyDegradation() instead.
   | 'node_degraded_start'
   | 'node_degraded_end'
+  // 6d: replication-lag spike on a database. Compiled from
+  // ChaosEventSpec.replication_lag_spike. Engine sets/clears a per-database
+  // multiplier in replicationLagOverrides; the database behavior reads it
+  // via ctx.getReplicationLagMultiplier() when sampling per-read lag.
+  | 'replication_lag_spike_start'
+  | 'replication_lag_spike_end'
 
 /**
  * A scheduled event. Immutable once enqueued — behaviors create new events,
@@ -144,6 +150,10 @@ export interface WindowMetrics {
   latencyMsP99: number
   /** failed / (failed + completed) over the window; 0 if no events. */
   errorRate: number
+  /** Phase 6d: max stalenessMs across responses in this window. 0 if none.
+   *  Stale = read returned data older than the primary's latest write at the
+   *  time of the read. Always 0 for primary-only routing. */
+  maxStalenessMs: number
 }
 
 export interface CumulativeMetrics {

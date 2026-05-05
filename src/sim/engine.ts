@@ -89,6 +89,11 @@ export class SimulationEngine {
   // 6c: degraded nodes carry a mode + intensity. Behaviors apply these via
   // ctx.applyDegradation when computing effective latency/failure params.
   private degradedNodes = new Map<string, DegradationState>()
+  // 6d: per-database replication-lag multiplier. 1 (or absent) → use the
+  // database's static replication_lag_ms_p50/p99. Set on
+  // replication_lag_spike_start, cleared on _end. Database behavior reads
+  // it via ctx.getReplicationLagMultiplier when sampling per-read lag.
+  private replicationLagOverrides = new Map<string, number>()
 
   // ─── Pause / speed (4c) ───────────────────────────────────────────────────
   private paused = false
@@ -309,6 +314,18 @@ export class SimulationEngine {
       this.degradedNodes.delete(ev.nodeId)
       return
     }
+    if (ev.kind === 'replication_lag_spike_start' && ev.nodeId) {
+      const p = ev.payload as { multiplier?: number } | undefined
+      const m = p?.multiplier
+      if (typeof m === 'number' && m > 0) {
+        this.replicationLagOverrides.set(ev.nodeId, m)
+      }
+      return
+    }
+    if (ev.kind === 'replication_lag_spike_end' && ev.nodeId) {
+      this.replicationLagOverrides.delete(ev.nodeId)
+      return
+    }
     if (ev.kind === 'cache_miss_storm_start' && ev.nodeId) {
       this.cacheHitRateOverrides.set(ev.nodeId, 0)
       return
@@ -414,6 +431,8 @@ export class SimulationEngine {
         getEdgeState: (id) => this.getOrInitEdgeState(id),
         getDegradation: (id) => this.degradedNodes.get(id),
         applyDegradation: (base, id) => this.applyDegradation(base, id),
+        getReplicationLagMultiplier: (id) =>
+          this.replicationLagOverrides.get(id) ?? 1,
         ...(request ? { request } : {}),
       }
 
@@ -605,6 +624,17 @@ export class SimulationEngine {
 
     const totalDecided = finalSuccessInWindow.length + finalFailureInWindow.length
 
+    // Phase 6d: max stalenessMs across all (final and intermediate) responses
+    // in the window. Most response hops carry through stalenessMs from the
+    // database; surfacing the window MAX makes lag spikes obvious without
+    // per-snapshot histogram machinery.
+    let maxStalenessMs = 0
+    for (const e of windowEvents) {
+      if (e.kind !== 'request_response') continue
+      const s = (e.payload as { stalenessMs?: number } | undefined)?.stalenessMs
+      if (typeof s === 'number' && s > maxStalenessMs) maxStalenessMs = s
+    }
+
     // Phase 6a: count rejection events per node in the current window.
     const rejectionsPerNode = new Map<string, number>()
     for (const e of windowEvents) {
@@ -673,6 +703,7 @@ export class SimulationEngine {
         latencyMsP95: percentile(latencies, 0.95),
         latencyMsP99: percentile(latencies, 0.99),
         errorRate: totalDecided === 0 ? 0 : finalFailureInWindow.length / totalDecided,
+        maxStalenessMs,
       },
       cumulativeMetrics: {
         totalRequestsArrived: cumArrivals,

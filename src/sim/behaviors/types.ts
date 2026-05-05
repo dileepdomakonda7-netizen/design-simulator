@@ -61,6 +61,10 @@ export interface BehaviorContext {
     base: P,
     nodeId: string,
   ) => P
+  /** Phase 6d: returns the active replication-lag multiplier on
+   *  `databaseNodeId`, or 1 if no spike is active. Database read path
+   *  multiplies p50/p99 of the lag distribution by this before sampling. */
+  getReplicationLagMultiplier: (databaseNodeId: string) => number
 }
 
 /**
