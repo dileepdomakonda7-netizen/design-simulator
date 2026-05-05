@@ -1,5 +1,5 @@
 {
-  "name": "design-simulator",
+  "name": "sysdraw",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -14,10 +14,12 @@
   "dependencies": {
     "@xyflow/react": "^12.10.2",
     "comlink": "^4.4.2",
+    "lz-string": "^1.5.0",
     "nanoid": "^5.0.7",
     "perfect-freehand": "^1.2.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.3",
     "recharts": "^2.15.4",
     "roughjs": "^4.6.6",
     "zod": "^3.23.8",

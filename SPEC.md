@@ -1,4 +1,4 @@
-# Design Simulator — SPEC.md
+# sysdraw — SPEC.md
 
 > **Status**: v1 specification. This document is the contract for everything built next.  
 > **Last updated**: 2026-05-03  
@@ -8,7 +8,7 @@
 
 ## 1. Project Overview
 
-Design Simulator is a browser-based system design and distributed systems simulation tool built for one person to learn by doing. The core loop is: draw a distributed architecture (or import one from an image or sketch), configure how traffic arrives and where failures occur, run a discrete-event simulation, then inspect exactly why latency spikes, queues back up, or cascading failures happen — and iterate. It targets desktop Chrome, Firefox, and Safari (latest). There is no server, no account, no sharing, and no other user. Designs persist to `localStorage` and export as self-contained JSON files. The tool exists so that building the simulator itself is the learning exercise, and watching your own designs behave under load makes the theory concrete.
+sysdraw is a browser-based system design and distributed systems simulation tool built for one person to learn by doing. The core loop is: draw a distributed architecture (or import one from an image or sketch), configure how traffic arrives and where failures occur, run a discrete-event simulation, then inspect exactly why latency spikes, queues back up, or cascading failures happen — and iterate. It targets desktop Chrome, Firefox, and Safari (latest). There is no server, no account, no sharing, and no other user. Designs persist to `localStorage` and export as self-contained JSON files. The tool exists so that building the simulator itself is the learning exercise, and watching your own designs behave under load makes the theory concrete.
 
 **Non-goals (permanent, not deferred):** user accounts, authentication, any server-side component, team features, sharing or collaboration, monetization, analytics, SEO, landing page, mobile or touch support, offline-first / PWA behavior, accessibility compliance beyond basic keyboard nav, internationalization.
 
