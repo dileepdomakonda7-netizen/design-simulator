@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import * as Comlink from 'comlink'
 import SimWorker from '@/sim/worker?worker'
 
@@ -32,7 +32,31 @@ import { ChaosTimeline } from './ChaosTimeline'
  *   │                 ├─ MetricsPanel ─┬─ Inspector ─┤
  *   └─────────────────┴────────────────┴─────────────┘
  */
-export function SimulateMode() {
+export interface DemoModeOptions {
+  /** Auto-start the simulation when the component mounts and a design is loaded.
+   *  Pre-fills seed/duration from `runConfig` (or sensible defaults). */
+  autoStart?: boolean
+  /** When the run completes, reset and re-run after 2 seconds. Pairs with
+   *  autoStart for the looping landing-page hero. */
+  loop?: boolean
+  /** Single-line lesson blurb shown in a dismissible banner above the controls. */
+  blurb?: string
+  /** Display label for the banner header. */
+  label?: string
+  /** Override seed/duration/rps for the auto-run. Used by demo scenarios. */
+  runConfig?: { seed?: number; durationMs?: number; rps?: number; speed?: number }
+  /** Hide the ControlPanel (autoStart + loop drive everything; user input is off). */
+  embed?: boolean
+}
+
+export function SimulateMode({
+  autoStart,
+  loop,
+  blurb,
+  label,
+  runConfig: demoRun,
+  embed,
+}: DemoModeOptions = {}) {
   const design = useDesignStore((s) => s.design)
   const status = useSimStore((s) => s.status)
   const config = useSimStore((s) => s.config)
@@ -161,6 +185,43 @@ export function SimulateMode() {
     await apiRef.current?.setSpeed(multiplier)
   }, [])
 
+  // ─── Banner + autoStart/loop wiring (v1 launch demo embeds) ─────────────────
+
+  const [bannerDismissed, setBannerDismissed] = useState(false)
+
+  // autoStart: kick off a run when the design first becomes non-empty AND we're idle.
+  useEffect(() => {
+    if (!autoStart) return
+    if (design.nodes.length === 0) return
+    if (status !== 'idle') return
+    const seed = demoRun?.seed ?? 42
+    const durationMs = demoRun?.durationMs ?? 5000
+    const rps = demoRun?.rps ?? 10
+    const speed = demoRun?.speed ?? 1
+    void start(seed, durationMs, rps, speed)
+    // Run-once per mount; re-trigger via the loop effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, design.nodes.length])
+
+  // loop: when a run completes, wait 2s then reset+restart. Cleared on unmount.
+  useEffect(() => {
+    if (!loop) return
+    if (status !== 'completed') return
+    const seed = demoRun?.seed ?? 42
+    const durationMs = demoRun?.durationMs ?? 5000
+    const rps = demoRun?.rps ?? 10
+    const speed = demoRun?.speed ?? 1
+    const t = setTimeout(() => {
+      reset()
+      // The reset() above flips status to 'idle'; call start directly so we
+      // don't depend on the autoStart effect re-firing (it's gated on a
+      // status transition the React batcher may merge).
+      void start(seed, durationMs, rps, speed)
+    }, 2000)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loop, status])
+
   if (design.nodes.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-8 text-center text-neutral-600">
@@ -175,16 +236,31 @@ export function SimulateMode() {
 
   return (
     <div className="flex flex-col h-full bg-neutral-50">
-      <ControlPanel
-        status={status}
-        hasConfig={config !== null}
-        onRun={start}
-        onPause={pause}
-        onResume={resume}
-        onCancel={cancel}
-        onReset={reset}
-        onSpeedChange={setSpeed}
-      />
+      {blurb && !bannerDismissed && (
+        <div className="bg-amber-50 border-b border-amber-200 px-3 py-2 flex items-start gap-2 text-xs">
+          <span className="font-medium text-amber-900 shrink-0">📚 {label ?? 'Demo'}:</span>
+          <span className="flex-1 text-amber-800">{blurb}</span>
+          <button
+            onClick={() => setBannerDismissed(true)}
+            className="text-amber-700 hover:text-amber-900 shrink-0"
+            aria-label="Dismiss demo banner"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      {!embed && (
+        <ControlPanel
+          status={status}
+          hasConfig={config !== null}
+          onRun={start}
+          onPause={pause}
+          onResume={resume}
+          onCancel={cancel}
+          onReset={reset}
+          onSpeedChange={setSpeed}
+        />
+      )}
       <div className="flex-1 grid grid-cols-[280px_1fr_360px] grid-rows-[1fr_280px] gap-2 p-2 min-h-0">
         <div className="row-span-2 min-h-0">
           <ChaosTimeline />

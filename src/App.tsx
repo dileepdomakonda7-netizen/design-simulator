@@ -1,12 +1,15 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Toolbar } from '@/components/Toolbar'
 import { useModeStore } from '@/store/modeStore'
 import { useDesignStore } from '@/store/designStore'
-import { listDesigns, loadDesignById } from '@/persistence/designStorage'
+import { listDesigns, loadDesignById, saveDesign } from '@/persistence/designStorage'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { DesignCanvas } from '@/canvas/DesignCanvas'
 import { SimDebugPage } from '@/sim/debugPage/SimDebugPage'
-import { SimulateMode } from '@/sim-ui/SimulateMode'
+import { SimulateMode, type DemoModeOptions } from '@/sim-ui/SimulateMode'
+import { DEMOS, type DemoBundle } from '@/demos/circuitBreakerPartialFailure'
+import { decodeDesignFromUrl } from '@/persistence/urlShare'
 
 // ─── Placeholder views (build replaced by DesignCanvas) ───────────────────────
 
@@ -23,40 +26,117 @@ function SketchModePlaceholder() {
   )
 }
 
-// SimulateModePlaceholder replaced by SimDebugPage (4a).
-// Real Simulate mode UI arrives in Prompt 4c.
-
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
   const mode = useModeStore((s) => s.mode)
+  const setMode = useModeStore((s) => s.setMode)
   useKeyboardShortcuts()
+  const [params] = useSearchParams()
 
-  // On mount: load the most recently updated design from localStorage.
-  // Falls back to the default design already in the store if nothing is saved.
+  // URL params drive entry behavior at /app:
+  //   ?demo=<name>     load a hardcoded demo bundle, switch to simulate
+  //   ?d=<base64>      load an LZ-encoded shared design (with confirmation)
+  //   ?autoplay=1      pass autoStart+loop to SimulateMode (for hero embed)
+  //   ?embed=1         hide Toolbar + ControlPanel (chrome-less embed)
+  //   ?debug=sim       legacy 4a debug page
+  const demoName = params.get('demo')
+  const sharedEncoded = params.get('d')
+  const autoplay = params.get('autoplay') === '1'
+  const embed = params.get('embed') === '1'
+  const debug = params.get('debug')
+  const useDebugSim = debug === 'sim'
+
+  const demoBundle: DemoBundle | undefined = demoName ? DEMOS[demoName] : undefined
+  const [shareError, setShareError] = useState<string | null>(null)
+
   useEffect(() => {
+    if (demoBundle) {
+      // Demo: load hardcoded design + switch to simulate. localStorage
+      // untouched. The demo banner is rendered inside SimulateMode.
+      useDesignStore.getState().loadDesign(demoBundle.design)
+      setMode('simulate')
+      return
+    }
+
+    if (sharedEncoded) {
+      // Shared link: validate, prompt before clobbering current design,
+      // back up the existing one as a timestamped record so it isn't lost.
+      const result = decodeDesignFromUrl(sharedEncoded)
+      if (!result.ok) {
+        setShareError(
+          result.reason === 'malformed'
+            ? 'This link is malformed.'
+            : `This design is invalid (${result.detail ?? 'schema mismatch'}).`,
+        )
+        return
+      }
+      const current = useDesignStore.getState().design
+      if (current.nodes.length > 0) {
+        const accept = window.confirm(
+          'Load shared design? Your current design will be saved as "Auto-backup".',
+        )
+        if (!accept) return
+        saveDesign({
+          ...current,
+          name: `Auto-backup ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
+          updatedAt: new Date().toISOString(),
+        })
+      }
+      useDesignStore.getState().loadDesign(result.design)
+      return
+    }
+
+    // Default: load most recently updated design from localStorage.
     const index = listDesigns()
     const latest = index[0]
     if (latest === undefined) return
     const design = loadDesignById(latest.id)
-    if (design) {
-      useDesignStore.getState().loadDesign(design)
-    }
-  }, [])
+    if (design) useDesignStore.getState().loadDesign(design)
+  }, [demoBundle, sharedEncoded, setMode])
 
-  // Hidden escape hatch for the 4a debug page (still useful for engine-level
-  // diagnostics). URL: /?debug=sim
-  const debug =
-    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('debug') : null
-  const useDebugSim = debug === 'sim'
+  const demoOptions = useMemo<DemoModeOptions>(() => {
+    if (!demoBundle) return {}
+    return {
+      autoStart: autoplay,
+      loop: autoplay,
+      embed,
+      label: demoBundle.label,
+      blurb: demoBundle.blurb,
+      runConfig: {
+        seed: demoBundle.runConfig.seed,
+        durationMs: demoBundle.runConfig.durationMs,
+        rps: 10,
+        speed: 1,
+      },
+    }
+  }, [demoBundle, autoplay, embed])
+
+  if (shareError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen p-8 text-center bg-gray-50">
+        <h1 className="text-lg font-semibold text-neutral-800 mb-2">
+          This design link can&apos;t be loaded
+        </h1>
+        <p className="text-sm text-neutral-600 max-w-md mb-4">{shareError}</p>
+        <p className="text-xs text-neutral-500 max-w-md mb-4">
+          The link may be malformed, truncated, or from an incompatible version of sysdraw.
+        </p>
+        <a href="/" className="text-sm text-blue-600 underline hover:text-blue-800">
+          ← Back to sysdraw
+        </a>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col h-screen bg-gray-100">
-      <Toolbar />
+      {!embed && <Toolbar />}
       <main className="flex-1 overflow-hidden">
         {mode === 'build' && <DesignCanvas />}
         {mode === 'sketch' && <SketchModePlaceholder />}
-        {mode === 'simulate' && (useDebugSim ? <SimDebugPage /> : <SimulateMode />)}
+        {mode === 'simulate' &&
+          (useDebugSim ? <SimDebugPage /> : <SimulateMode {...demoOptions} />)}
       </main>
     </div>
   )
