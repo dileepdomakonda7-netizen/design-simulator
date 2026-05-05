@@ -53,9 +53,19 @@ const onRequestReceive: Behavior = (ctx) => {
 
   const out: NewEvent[] = []
 
+  // Phase 6c: degradation scales delivery latency and/or replaces failure_rate.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.delivery_latency_ms_p50,
+      p99: params.delivery_latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
+  )
+
   // 1) Publisher fire-and-forget response.
   const publisherHop = ctx.request.path[ctx.request.path.length - 2]
-  const publisherSuccess = !(params.failure_rate > 0 && ctx.rng() < params.failure_rate)
+  const publisherSuccess = !(eff.failure_rate > 0 && ctx.rng() < eff.failure_rate)
   if (publisherHop) {
     out.push({
       at: ctx.now,
@@ -76,11 +86,7 @@ const onRequestReceive: Behavior = (ctx) => {
   const fanout = Math.min(params.subscriber_count, ctx.outgoing.length)
   for (let k = 0; k < fanout; k++) {
     const edge = ctx.outgoing[k]!
-    const deliveryDelay = sampleLatency(
-      params.delivery_latency_ms_p50,
-      params.delivery_latency_ms_p99,
-      ctx.rng,
-    )
+    const deliveryDelay = sampleLatency(eff.p50, eff.p99, ctx.rng)
     const newRequestId = nextSubscriberRequestId(ctx.nodeState, ctx.request.id, k)
     out.push(
       ...forwardRequest(ctx, edge, {

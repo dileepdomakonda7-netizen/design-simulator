@@ -62,11 +62,16 @@ const onRequestReceive: Behavior = (ctx) => {
     w.push(ctx.now)
   }
 
-  const latency = sampleLatency(
-    params.latency_ms_p50,
-    params.latency_ms_p99,
-    ctx.rng,
+  // Phase 6c: scale latency by an active 'slow' degradation on this node.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.latency_ms_p50,
+      p99: params.latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
   )
+  const latency = sampleLatency(eff.p50, eff.p99, ctx.rng)
   const events: NewEvent[] = [
     {
       at: ctx.now + latency,
@@ -98,7 +103,16 @@ const onRequestComplete: Behavior = (ctx) => {
     // Timeout already fired; suppress this completion.
     return []
   }
-  const success = ctx.rng() >= params.failure_rate
+  // Phase 6c: 'errors' degradation overrides failure_rate.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.latency_ms_p50,
+      p99: params.latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
+  )
+  const success = ctx.rng() >= eff.failure_rate
   return forwardResponseUpstream(ctx, success)
 }
 

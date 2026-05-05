@@ -42,8 +42,19 @@ const onRequestReceive: Behavior = (ctx) => {
   const params = getParams(ctx.node)
   if (!ctx.request) return []
 
+  // Phase 6c: degradation scales read latency and/or replaces failure_rate.
+  // hit_rate is NOT degraded — only latency/error parameters.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.read_latency_ms_p50,
+      p99: params.read_latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
+  )
+
   // Failure injection.
-  if (params.failure_rate > 0 && ctx.rng() < params.failure_rate) {
+  if (eff.failure_rate > 0 && ctx.rng() < eff.failure_rate) {
     return rejectHere(ctx, 'failed')
   }
 
@@ -51,11 +62,7 @@ const onRequestReceive: Behavior = (ctx) => {
   const hitRate = ctx.getCacheHitRateOverride(ctx.node.id) ?? params.hit_rate
   if (ctx.rng() < hitRate) {
     // Hit — respond after read latency.
-    const latency = sampleLatency(
-      params.read_latency_ms_p50,
-      params.read_latency_ms_p99,
-      ctx.rng,
-    )
+    const latency = sampleLatency(eff.p50, eff.p99, ctx.rng)
     // Schedule a request_complete so the cache's response uses the same
     // forward-upstream path other behaviors use. We dispatch on
     // request_complete via a registered handler below.

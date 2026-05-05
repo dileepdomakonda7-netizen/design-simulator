@@ -82,11 +82,16 @@ function startProcessing(
   requestId: string,
 ): NewEvent[] {
   const params = getParams(ctx.node)
-  const latency = sampleLatency(
-    params.latency_ms_p50,
-    params.latency_ms_p99,
-    ctx.rng,
+  // Phase 6c: latency is scaled by any active 'slow' degradation on this node.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.latency_ms_p50,
+      p99: params.latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
   )
+  const latency = sampleLatency(eff.p50, eff.p99, ctx.rng)
   setProcessing(ctx.nodeState, getProcessing(ctx.nodeState) + 1)
   return [
     {
@@ -199,7 +204,16 @@ const onRequestReceive: Behavior = (ctx) => {
 const onRequestComplete: Behavior = (ctx) => {
   const params = getParams(ctx.node)
   setProcessing(ctx.nodeState, Math.max(0, getProcessing(ctx.nodeState) - 1))
-  const success = ctx.rng() >= params.failure_rate
+  // Phase 6c: failure_rate is overridden by an 'errors' degradation on this node.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.latency_ms_p50,
+      p99: params.latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
+  )
+  const success = ctx.rng() >= eff.failure_rate
 
   const out: NewEvent[] = []
   const downstream = success ? defaultNextHop(ctx.outgoing) : undefined

@@ -59,11 +59,16 @@ function startProcessing(
 ): NewEvent[] {
   const params = getParams(ctx.node)
   setInFlightReads(ctx.nodeState, getInFlightReads(ctx.nodeState) + 1)
-  const latency = sampleLatency(
-    params.read_latency_ms_p50,
-    params.read_latency_ms_p99,
-    ctx.rng,
+  // Phase 6c: scale read latency by an active 'slow' degradation on this node.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.read_latency_ms_p50,
+      p99: params.read_latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
   )
+  const latency = sampleLatency(eff.p50, eff.p99, ctx.rng)
   return [
     {
       at: ctx.now + latency,
@@ -125,7 +130,16 @@ const onRequestComplete: Behavior = (ctx) => {
   // next queued request which will increment again. Net inFlightReads stays
   // at capacity while the queue has work — exactly what we want.
   setInFlightReads(ctx.nodeState, Math.max(0, getInFlightReads(ctx.nodeState) - 1))
-  const success = ctx.rng() >= params.failure_rate
+  // Phase 6c: failure_rate is overridden by an 'errors' degradation on this node.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.read_latency_ms_p50,
+      p99: params.read_latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
+  )
+  const success = ctx.rng() >= eff.failure_rate
   const out: NewEvent[] = forwardResponseUpstream(ctx, success)
 
   const q = getQueue(ctx.nodeState)

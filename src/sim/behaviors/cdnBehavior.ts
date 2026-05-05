@@ -43,17 +43,25 @@ const onRequestReceive: Behavior = (ctx) => {
   const params = getParams(ctx.node)
   if (!ctx.request) return []
 
-  if (params.failure_rate > 0 && ctx.rng() < params.failure_rate) {
+  // Phase 6c: an active degradation on this node scales hit latency
+  // and/or replaces failure_rate. hit_rate itself is NOT degraded — only
+  // the latency/error parameters covered by the partial-failure model.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.edge_latency_ms_p50,
+      p99: params.edge_latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
+  )
+
+  if (eff.failure_rate > 0 && ctx.rng() < eff.failure_rate) {
     return rejectHere(ctx, 'failed')
   }
 
   if (ctx.rng() < params.hit_rate) {
     // Edge hit.
-    const latency = sampleLatency(
-      params.edge_latency_ms_p50,
-      params.edge_latency_ms_p99,
-      ctx.rng,
-    )
+    const latency = sampleLatency(eff.p50, eff.p99, ctx.rng)
     return [
       {
         at: ctx.now + latency,

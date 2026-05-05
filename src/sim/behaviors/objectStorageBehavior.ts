@@ -66,11 +66,16 @@ const onRequestReceive: Behavior = (ctx) => {
   }
   w.push({ at: ctx.now, bytes: ASSUMED_BYTES_PER_REQUEST })
 
-  const latency = sampleLatency(
-    params.read_latency_ms_p50,
-    params.read_latency_ms_p99,
-    ctx.rng,
+  // Phase 6c: scale read latency by an active 'slow' degradation on this node.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.read_latency_ms_p50,
+      p99: params.read_latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
   )
+  const latency = sampleLatency(eff.p50, eff.p99, ctx.rng)
   return [
     {
       at: ctx.now + latency,
@@ -84,7 +89,16 @@ const onRequestReceive: Behavior = (ctx) => {
 
 const onRequestComplete: Behavior = (ctx) => {
   const params = getParams(ctx.node)
-  const success = ctx.rng() >= params.failure_rate
+  // Phase 6c: 'errors' degradation overrides failure_rate.
+  const eff = ctx.applyDegradation(
+    {
+      p50: params.read_latency_ms_p50,
+      p99: params.read_latency_ms_p99,
+      failure_rate: params.failure_rate,
+    },
+    ctx.node.id,
+  )
+  const success = ctx.rng() >= eff.failure_rate
   return forwardResponseUpstream(ctx, success)
 }
 
