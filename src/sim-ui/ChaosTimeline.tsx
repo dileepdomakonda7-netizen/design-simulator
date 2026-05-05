@@ -152,6 +152,23 @@ export function ChaosTimeline() {
           }}
           disabled={design.nodes.length === 0}
         />
+        <Quick
+          label="📡 Replication lag spike"
+          onClick={() => {
+            const db = design.nodes.find((n) => n.type === 'database')
+            if (!db) return
+            add({
+              id: nanoid(),
+              kind: 'replication_lag_spike',
+              node_id: db.id,
+              at_ms: Math.round(durationMs / 2),
+              duration_ms: 2000,
+              intensity: 1.0,
+            })
+          }}
+          disabled={!design.nodes.some((n) => n.type === 'database')}
+          tooltip="Database only — set replicas>1 + read_routing≠primary_only to see effect"
+        />
       </div>
 
       <div className="px-3 pt-3 pb-2 border-b border-neutral-100 shrink-0">
@@ -357,6 +374,8 @@ function colorForKind(kind: ChaosEventSpec['kind']): string {
       return '#a855f7'
     case 'node_degraded':
       return '#ca8a04'
+    case 'replication_lag_spike':
+      return '#0ea5e9'
   }
 }
 
@@ -406,17 +425,46 @@ function ChaosRow({
           {(spec.kind === 'node_crash' ||
             spec.kind === 'cache_miss_storm' ||
             spec.kind === 'saturate_node' ||
-            spec.kind === 'node_degraded') && (
+            spec.kind === 'node_degraded' ||
+            spec.kind === 'replication_lag_spike') && (
             <SelectPair
-              label={spec.kind === 'cache_miss_storm' ? 'cache' : 'node'}
+              label={
+                spec.kind === 'cache_miss_storm'
+                  ? 'cache'
+                  : spec.kind === 'replication_lag_spike'
+                    ? 'database'
+                    : 'node'
+              }
               value={spec.node_id}
               options={
                 spec.kind === 'cache_miss_storm'
                   ? nodes.filter((n) => n.type === 'cache').map((n) => ({ id: n.id, label: n.label }))
-                  : nodes.map((n) => ({ id: n.id, label: n.label }))
+                  : spec.kind === 'replication_lag_spike'
+                    ? nodes.filter((n) => n.type === 'database').map((n) => ({ id: n.id, label: n.label }))
+                    : nodes.map((n) => ({ id: n.id, label: n.label }))
               }
               onChange={(v) => onChange({ node_id: v })}
             />
+          )}
+          {spec.kind === 'replication_lag_spike' && (
+            <label className="flex items-center gap-1.5 text-[11px] text-neutral-700">
+              <span className="w-20 shrink-0 text-neutral-500">intensity</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={spec.intensity}
+                onChange={(e) => {
+                  const n = parseFloat(e.target.value)
+                  if (Number.isFinite(n)) onChange({ intensity: n })
+                }}
+                className="flex-1 min-w-0"
+              />
+              <span className="w-10 text-right font-mono text-[10px] text-neutral-500">
+                {(1 + spec.intensity * 9).toFixed(1)}×
+              </span>
+            </label>
           )}
           {spec.kind === 'node_degraded' && (
             <>
@@ -494,6 +542,8 @@ function describeSpec(spec: ChaosEventSpec, nodes: Node[]): string {
       return `Saturate ${labelOf(spec.node_id)}`
     case 'node_degraded':
       return `Degrade ${labelOf(spec.node_id)} · ${spec.mode} (${(spec.intensity * 100).toFixed(0)}%)`
+    case 'replication_lag_spike':
+      return `Lag spike ${labelOf(spec.node_id)} (${(1 + spec.intensity * 9).toFixed(1)}×)`
   }
 }
 
