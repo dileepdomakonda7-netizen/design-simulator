@@ -55,6 +55,14 @@ The project is renamed from "Design Simulator" to **sysdraw**. v1 ships a public
 4. **`og-image.png`** — replace `public/og-image.png` with a real 1200×630 screenshot of the canonical demo mid-run (around the t=2.5s mark, with the breaker open and the latency chart visible). Vercel auto-deploys on push.
 5. **Mobile hand-test** — visit the deployed site on a phone; confirm landing page reads + the "Try the demo →" link works. Document any breakage as a known limitation.
 
+### Mobile hero fallback (post-launch fix)
+
+On viewports ≤768px the desktop simulator panels become illegible — banner wraps as 7 lines, chaos / metrics panels squish, the actual canvas may render off-screen. Fix: detect the breakpoint via `window.matchMedia('(max-width: 768px)')` (inline `useIsMobile` hook in `LandingPage.tsx`, no shared util — single use) and swap the iframe for a tappable static `<img src="/og-image.png">` linked to `/app?demo=cb-partial`. Caption underneath: "Best experienced on desktop — tap to open the simulator on this device."
+
+The mobile hero re-uses `/og-image.png` (1200×630) for v1. Aspect ratio is OG-shaped, not perfectly hero-shaped, but reasonable. If/when a dedicated `/landing-hero.png` asset is created (different aspect or different framing — eg with a "tap to play" overlay), swap the `<img src>`.
+
+The mobile/desktop choice re-evaluates on viewport resize (matchMedia change listener) — useful when an iPad rotates or when DevTools toggles device emulation.
+
 ### Decisions and v1 simplifications
 
 **Iframe embed for the hero, not a refactored embeddable component.** The hero embeds `/app?demo=cb-partial&autoplay=1&embed=1` as an `<iframe sandbox="allow-scripts allow-same-origin">`. Cheaper than restructuring `SimulateMode` to be a pure functional embed; the worker, the sim store, and the design store all stay co-located in `App` where they already work.

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 /**
@@ -9,8 +10,32 @@ import { Link } from 'react-router-dom'
  * The iframe approach is deliberate: the canvas app already knows how to
  * mount itself, react to URL params, and run a worker. Iframing it for the
  * hero keeps both routes cleanly separable (build mode vs preview).
+ *
+ * Mobile fallback: on viewports ≤768px the desktop simulator is illegible
+ * (panels squish, banner wraps to 7 lines). Swap the iframe for a static
+ * tappable screenshot pointing to /app?demo=cb-partial. Senior engineers
+ * visit on desktop; mobile is "tap to open the simulator on this device"
+ * not "render the simulator inline at miniature size."
  */
+const MOBILE_BREAKPOINT = '(max-width: 768px)'
+
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return window.matchMedia(MOBILE_BREAKPOINT).matches
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mq = window.matchMedia(MOBILE_BREAKPOINT)
+    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return isMobile
+}
+
 export function LandingPage() {
+  const isMobile = useIsMobile()
   return (
     <div className="min-h-screen bg-[#fdfaf3] text-neutral-900 flex flex-col">
       {/* ─── Hero ────────────────────────────────────────────────────── */}
@@ -29,16 +54,35 @@ export function LandingPage() {
           </Link>
         </p>
 
-        <div className="mt-8 md:mt-12 rounded-lg border border-neutral-300 overflow-hidden bg-white shadow-sm aspect-video">
-          <iframe
-            src="/app?demo=cb-partial&autoplay=1&embed=1"
-            className="w-full h-full block"
-            title="sysdraw demo: circuit breaker + partial failure"
-            // The simulator runs entirely client-side in a Web Worker —
-            // no third-party requests escape this iframe.
-            sandbox="allow-scripts allow-same-origin"
-          />
-        </div>
+        {isMobile ? (
+          <div className="mt-8">
+            <Link
+              to="/app?demo=cb-partial"
+              className="block rounded-lg border border-neutral-300 overflow-hidden bg-white shadow-sm cursor-pointer hover:border-neutral-500 transition-colors"
+              aria-label="Open the sysdraw demo on this device"
+            >
+              <img
+                src="/og-image.png"
+                alt="sysdraw demo screenshot"
+                className="block w-full h-auto"
+              />
+            </Link>
+            <p className="mt-3 text-xs text-neutral-500 text-center">
+              Best experienced on desktop — tap to open the simulator on this device.
+            </p>
+          </div>
+        ) : (
+          <div className="mt-8 md:mt-12 rounded-lg border border-neutral-300 overflow-hidden bg-white shadow-sm aspect-video">
+            <iframe
+              src="/app?demo=cb-partial&autoplay=1&embed=1"
+              className="w-full h-full block"
+              title="sysdraw demo: circuit breaker + partial failure"
+              // The simulator runs entirely client-side in a Web Worker —
+              // no third-party requests escape this iframe.
+              sandbox="allow-scripts allow-same-origin"
+            />
+          </div>
+        )}
       </section>
 
       {/* ─── What is this ───────────────────────────────────────────── */}
