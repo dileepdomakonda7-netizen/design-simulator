@@ -31,8 +31,9 @@ import {
   consistentHashNext,
 } from '../routing'
 import {
-  forwardRequest,
+  emitWithBreaker,
   forwardResponseUpstream,
+  observeCurrentRequestOutcome,
   rejectHere,
   scheduleTimeoutGuard,
   clearTimeoutGuard,
@@ -82,7 +83,7 @@ const onRequestReceive: Behavior = (ctx) => {
     return rejectHere(ctx, 'failed')
   }
 
-  const events: NewEvent[] = forwardRequest(ctx, edge, {
+  const events: NewEvent[] = emitWithBreaker(ctx, edge, {
     atOffset: LB_PROCESSING_DELAY_MS,
   })
   if (edge.params.timeout_ms > 0) {
@@ -105,9 +106,13 @@ const onRequestResponse: Behavior = (ctx) => {
   const payload = ctx.triggeringEvent.payload as { success?: boolean } | undefined
   const success = payload?.success ?? true
 
+  // Phase 6b: observe outcome for the breaker on the LB→target edge.
+  const breakerEvents = observeCurrentRequestOutcome(
+    ctx,
+    success ? 'success' : 'failure',
+  )
+
   if (!success) {
-    // Try to retry along the same outgoing path. We use defaultNextHop here
-    // rather than re-running the algorithm to keep retry destination stable.
     const edge = defaultNextHop(ctx.outgoing)
     if (edge) {
       const retry = planRetry(ctx, edge, ctx.request.attempt)
@@ -123,18 +128,21 @@ const onRequestResponse: Behavior = (ctx) => {
             ),
           )
         }
-        return retry.events
+        return [...breakerEvents, ...retry.events]
       }
     }
   }
-  return forwardResponseUpstream(ctx, success)
+  return [...breakerEvents, ...forwardResponseUpstream(ctx, success)]
 }
 
 const onRequestTimeout: Behavior = (ctx) => {
   if (!ctx.request) return []
   const wasAwaiting = clearTimeoutGuard(ctx.request.id, ctx.nodeState)
   if (!wasAwaiting) return []
-  return forwardResponseUpstream(ctx, false)
+  return [
+    ...observeCurrentRequestOutcome(ctx, 'failure'),
+    ...forwardResponseUpstream(ctx, false),
+  ]
 }
 
 registerBehavior('load_balancer', 'request_receive', onRequestReceive)

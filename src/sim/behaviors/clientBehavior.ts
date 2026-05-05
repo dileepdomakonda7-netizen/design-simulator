@@ -29,7 +29,8 @@
 import { registerBehavior } from '../behaviorRegistry'
 import { defaultNextHop } from '../routing'
 import {
-  forwardRequest,
+  emitWithBreaker,
+  observeCurrentRequestOutcome,
   rejectHere,
   scheduleTimeoutGuard,
   clearTimeoutGuard,
@@ -54,7 +55,7 @@ const onRequestArrival: Behavior = (ctx) => {
   }
   if (!ctx.request) return []
 
-  const events = forwardRequest(ctx, edge)
+  const events = emitWithBreaker(ctx, edge)
   const timeoutMs = edge.params.timeout_ms || params.timeout_ms
   events.push(
     scheduleTimeoutGuard(
@@ -78,16 +79,21 @@ const onRequestResponse: Behavior = (ctx) => {
   }
   const payload = ctx.triggeringEvent.payload as { success?: boolean } | undefined
   const success = payload?.success ?? true
+
+  // Phase 6b: observe the outcome on the breaker for our outgoing edge.
+  const breakerEvents = observeCurrentRequestOutcome(
+    ctx,
+    success ? 'success' : 'failure',
+  )
+
   if (success) {
-    // Engine drops the request from in-flight on origin arrival.
-    return []
+    return breakerEvents
   }
   // Failure response. Try a retry if the outgoing edge's policy allows.
   const edge = defaultNextHop(ctx.outgoing)
   if (edge) {
     const retry = planRetry(ctx, edge, ctx.request.attempt)
     if (retry) {
-      // Re-arm timeout guard for the retry.
       const params = getParams(ctx.node)
       const timeoutMs = edge.params.timeout_ms || params.timeout_ms
       retry.events.push(
@@ -99,25 +105,22 @@ const onRequestResponse: Behavior = (ctx) => {
           ctx.nodeState,
         ),
       )
-      return retry.events
+      return [...breakerEvents, ...retry.events]
     }
   }
-  // No retry; let the engine finalize. The failure is recorded in metrics
-  // because the response payload says success=false.
-  return []
+  return breakerEvents
 }
 
 const onRequestTimeout: Behavior = (ctx) => {
   if (!ctx.request) return []
   const wasAwaiting = clearTimeoutGuard(ctx.request.id, ctx.nodeState)
   if (!wasAwaiting) {
-    // The response already came; this timeout fire is stale.
     return []
   }
-  // Real timeout. Record as a timeout event (already in the log) and
-  // emit a synthetic failure response so the request finalizes through
-  // the same path the response would. Engine drops it on origin arrival.
+  // Phase 6b: a timeout is a failure observation for the breaker.
+  const breakerEvents = observeCurrentRequestOutcome(ctx, 'failure')
   return [
+    ...breakerEvents,
     {
       at: ctx.now,
       kind: 'request_response',

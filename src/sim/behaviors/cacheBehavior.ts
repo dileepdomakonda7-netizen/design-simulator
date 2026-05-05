@@ -23,8 +23,9 @@ import { registerBehavior } from '../behaviorRegistry'
 import { defaultNextHop } from '../routing'
 import { sampleLatency } from '../latency'
 import {
-  forwardRequest,
+  emitWithBreaker,
   forwardResponseUpstream,
+  observeCurrentRequestOutcome,
   rejectHere,
 } from './shared'
 import type { Behavior } from './types'
@@ -75,7 +76,7 @@ const onRequestReceive: Behavior = (ctx) => {
     // Cache miss with nothing downstream — treat as failure.
     return rejectHere(ctx, 'failed')
   }
-  return forwardRequest(ctx, edge)
+  return emitWithBreaker(ctx, edge)
 }
 
 const onRequestComplete: Behavior = (ctx) => {
@@ -84,11 +85,14 @@ const onRequestComplete: Behavior = (ctx) => {
 }
 
 const onRequestResponse: Behavior = (ctx) => {
-  // Origin response on miss path. Forward upstream (we don't add cache
-  // read latency on the return — typical CDNs/caches deliver from edge,
-  // origin path is what dominates).
+  // Origin response on miss path. Observe outcome for the cache→origin
+  // edge breaker, then forward upstream.
   const payload = ctx.triggeringEvent.payload as { success?: boolean } | undefined
-  return forwardResponseUpstream(ctx, payload?.success ?? true)
+  const success = payload?.success ?? true
+  return [
+    ...observeCurrentRequestOutcome(ctx, success ? 'success' : 'failure'),
+    ...forwardResponseUpstream(ctx, success),
+  ]
 }
 
 registerBehavior('cache', 'request_receive', onRequestReceive)

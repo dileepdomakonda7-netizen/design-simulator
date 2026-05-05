@@ -30,8 +30,11 @@
  */
 import { registerBehavior } from '../behaviorRegistry'
 import { sampleLatency } from '../latency'
+import { defaultNextHop } from '../routing'
 import {
+  emitWithBreaker,
   forwardResponseUpstream,
+  observeCurrentRequestOutcome,
   rejectAndRespond,
   displaceAndRespond,
 } from './shared'
@@ -183,11 +186,28 @@ const onRequestReceive: Behavior = (ctx) => {
   return rejectAndRespond(ctx, 'capacity', { queueDepth: q.length })
 }
 
+/**
+ * On local processing completion: if the app server has a downstream edge,
+ * forward the request there (subject to circuit breaker) and wait for the
+ * response to come back via onRequestResponse. Otherwise, respond upstream
+ * directly. This makes the chain `client → app → db` meaningfully exercise
+ * the edge `app → db` (Phase 4 model treated app_server as a leaf).
+ *
+ * Local processing slot is freed at this point — the downstream call is
+ * modeled as async (the slot can take another queued request).
+ */
 const onRequestComplete: Behavior = (ctx) => {
   const params = getParams(ctx.node)
   setProcessing(ctx.nodeState, Math.max(0, getProcessing(ctx.nodeState) - 1))
   const success = ctx.rng() >= params.failure_rate
-  const out: NewEvent[] = forwardResponseUpstream(ctx, success)
+
+  const out: NewEvent[] = []
+  const downstream = success ? defaultNextHop(ctx.outgoing) : undefined
+  if (downstream) {
+    out.push(...emitWithBreaker(ctx, downstream))
+  } else {
+    out.push(...forwardResponseUpstream(ctx, success))
+  }
 
   // Drain queue: if there's a waiting request and we have a slot, start it.
   const q = getQueue(ctx.nodeState)
@@ -198,10 +218,17 @@ const onRequestComplete: Behavior = (ctx) => {
   return out
 }
 
+/**
+ * Response from downstream came back. Observe the outcome for the breaker on
+ * the downstream edge, then forward the response upstream toward the client.
+ */
 const onRequestResponse: Behavior = (ctx) => {
-  // App servers in the middle of a chain forward responses upstream.
   const payload = ctx.triggeringEvent.payload as { success?: boolean } | undefined
-  return forwardResponseUpstream(ctx, payload?.success ?? true)
+  const success = payload?.success ?? true
+  return [
+    ...observeCurrentRequestOutcome(ctx, success ? 'success' : 'failure'),
+    ...forwardResponseUpstream(ctx, success),
+  ]
 }
 
 registerBehavior('app_server', 'request_receive', onRequestReceive)

@@ -22,8 +22,9 @@ import { registerBehavior } from '../behaviorRegistry'
 import { defaultNextHop } from '../routing'
 import { sampleLatency } from '../latency'
 import {
-  forwardRequest,
+  emitWithBreaker,
   forwardResponseUpstream,
+  observeCurrentRequestOutcome,
   rejectHere,
   scheduleTimeoutGuard,
   clearTimeoutGuard,
@@ -68,7 +69,7 @@ const onRequestReceive: Behavior = (ctx) => {
   const edge = defaultNextHop(ctx.outgoing)
   if (!edge) return rejectHere(ctx, 'failed')
 
-  const events: NewEvent[] = forwardRequest(ctx, edge)
+  const events: NewEvent[] = emitWithBreaker(ctx, edge)
   events.push(
     scheduleTimeoutGuard(
       ctx.node.id,
@@ -89,14 +90,21 @@ const onRequestResponse: Behavior = (ctx) => {
   if (!ctx.request) return []
   clearTimeoutGuard(ctx.request.id, ctx.nodeState)
   const payload = ctx.triggeringEvent.payload as { success?: boolean } | undefined
-  return forwardResponseUpstream(ctx, payload?.success ?? true)
+  const success = payload?.success ?? true
+  return [
+    ...observeCurrentRequestOutcome(ctx, success ? 'success' : 'failure'),
+    ...forwardResponseUpstream(ctx, success),
+  ]
 }
 
 const onRequestTimeout: Behavior = (ctx) => {
   if (!ctx.request) return []
   const wasAwaiting = clearTimeoutGuard(ctx.request.id, ctx.nodeState)
   if (!wasAwaiting) return []
-  return forwardResponseUpstream(ctx, false)
+  return [
+    ...observeCurrentRequestOutcome(ctx, 'failure'),
+    ...forwardResponseUpstream(ctx, false),
+  ]
 }
 
 registerBehavior('cdn', 'request_receive', onRequestReceive)
