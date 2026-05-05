@@ -36,16 +36,16 @@ The project is renamed from "Design Simulator" to **sysdraw**. v1 ships a public
 
 | # | Criterion | Status |
 |---|-----------|--------|
-| 1 | `sysdraw.vercel.app` loads landing page | ⏳ awaiting Vercel hookup (manual) |
-| 2 | `/app?demo=cb-partial` runs the lesson | ✅ verified locally |
+| 1 | `sysdraw.vercel.app` loads landing page | ✅ live |
+| 2 | `/app?demo=cb-partial` runs the lesson | ✅ verified in production |
 | 3 | Demo banner dismissible | ✅ |
 | 4 | URL-sharing round-trip | ✅ verified locally |
 | 5 | `/app` (no params) loads localStorage | ✅ |
 | 6 | Phase 4–6 functionality intact | ✅ 16/16 tests, build clean |
-| 7 | Mobile readable, demo link clickable | ⏳ awaiting deploy + hand-test |
-| 8 | OpenGraph preview | ✅ tags wired; **og-image.png placeholder** |
-| 9 | GitHub repo renamed `sysdraw` | ⏳ awaiting `gh auth login` |
-| 10 | CI auto-deploy on push to main | ⏳ awaiting Vercel hookup |
+| 7 | Mobile readable, demo link clickable | ⏳ awaiting hand-test |
+| 8 | OpenGraph preview | ⏳ tags wired; **og-image.png is still placeholder** |
+| 9 | GitHub repo renamed `sysdraw` | ✅ `github.com/dileepdomakonda7-netizen/sysdraw` |
+| 10 | CI auto-deploy on push to main | ✅ Vercel auto-deploys on every push |
 
 ### Manual steps still required (need user / external auth)
 
