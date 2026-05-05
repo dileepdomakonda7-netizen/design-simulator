@@ -239,6 +239,14 @@ export function MetricsPanel() {
             value={useCumBreakerRejections()}
             color="text-amber-700"
           />
+          {/* Phase 6d: max staleness in the latest snapshot's window. 0 unless
+              the design has replicated reads (replicas>1, read_routing≠primary_only). */}
+          <Stat
+            label="max staleness"
+            value={Math.round(latest?.windowMetrics.maxStalenessMs ?? 0)}
+            color="text-sky-700"
+            suffix="ms"
+          />
         </div>
       </div>
     </div>
@@ -310,11 +318,24 @@ function useCumBreakerRejections(): number {
   }, [events])
 }
 
-function Stat({ label, value, color }: { label: string; value: number; color?: string }) {
+function Stat({
+  label,
+  value,
+  color,
+  suffix,
+}: {
+  label: string
+  value: number
+  color?: string
+  suffix?: string
+}) {
   return (
     <div className="flex items-center justify-between py-0.5">
       <span className="text-neutral-500">{label}</span>
-      <span className={`font-mono tabular-nums ${color ?? 'text-neutral-800'}`}>{value}</span>
+      <span className={`font-mono tabular-nums ${color ?? 'text-neutral-800'}`}>
+        {value}
+        {suffix ? ` ${suffix}` : ''}
+      </span>
     </div>
   )
 }
