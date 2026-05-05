@@ -51,6 +51,30 @@ export interface BehaviorContext {
    *  for circuit breaker windows / open-time / probe-in-flight bits. Per-
    *  (simulation, edge), reset on each new run. */
   getEdgeState: (edgeId: string) => Record<string, unknown>
+  /** Phase 6c: returns the active degradation for `nodeId` if any. Pure read. */
+  getDegradation: (nodeId: string) => DegradationState | undefined
+  /** Phase 6c: scale latency p50/p99 and override failure_rate per the
+   *  active degradation on `nodeId`. Returns a new struct; never mutates
+   *  the input. Behaviors call this once per request when computing
+   *  effective params. Pure given engine state. */
+  applyDegradation: <P extends { p50: number; p99: number; failure_rate: number }>(
+    base: P,
+    nodeId: string,
+  ) => P
+}
+
+/**
+ * Phase 6c: per-node partial-failure state. Inserted into the engine's
+ * degradedNodes map on `node_degraded_start`, removed on `_end`.
+ *   - mode = 'slow'             → latency × (1 + intensity*9)
+ *   - mode = 'errors'           → failure_rate replaced by min(intensity, 1)
+ *   - mode = 'slow_and_errors'  → both apply
+ */
+export interface DegradationState {
+  mode: 'slow' | 'errors' | 'slow_and_errors'
+  intensity: number
+  startedAt: number
+  endsAt: number
 }
 
 /**

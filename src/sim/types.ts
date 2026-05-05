@@ -45,6 +45,12 @@ export type SimEventKind =
   | 'circuit_breaker_opened'
   | 'circuit_breaker_closed'
   | 'circuit_breaker_half_open'
+  // 6c: per-node partial-failure (degraded mode) markers. Compiled from
+  // ChaosEventSpec.node_degraded; engine processes them to mutate the
+  // degradedNodes map. Behaviors do NOT dispatch on these — they read
+  // the engine's degradedNodes via ctx.applyDegradation() instead.
+  | 'node_degraded_start'
+  | 'node_degraded_end'
 
 /**
  * A scheduled event. Immutable once enqueued — behaviors create new events,
@@ -118,12 +124,14 @@ export interface NodeSnapshot {
   nodeId: string
   queueDepth: number
   inFlight: number
-  /** v1 uses 'up' / 'down'; 'degraded' reserved for v2 partial-failure features. */
   state: 'up' | 'degraded' | 'down'
-  /** Phase 6a: per-snapshot backpressure visibility. */
+  /** Phase 6a backpressure visibility. */
   queueMaxDepth?: number // undefined = unbounded
   rejectionsInWindow: number // request_reject events at this node in last windowMs
   saturated: boolean // queueDepth >= maxDepth-1 OR inFlight >= capacity
+  /** Phase 6c partial-failure visibility. Populated when state === 'degraded'. */
+  degradationMode?: 'slow' | 'errors' | 'slow_and_errors'
+  degradationIntensity?: number
 }
 
 export interface WindowMetrics {

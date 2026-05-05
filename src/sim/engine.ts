@@ -14,7 +14,11 @@ import { compileChaosPlan } from './chaos'
 import { readSnapshot as readCBSnapshot } from './circuitBreaker'
 import { getBehavior } from './behaviorRegistry'
 import { subStream } from './prng'
-import type { BehaviorContext, NewEvent } from './behaviors/types'
+import type {
+  BehaviorContext,
+  DegradationState,
+  NewEvent,
+} from './behaviors/types'
 import type { EdgeSnapshot } from './types'
 
 /**
@@ -75,14 +79,16 @@ export class SimulationEngine {
   private cumCompleted = 0
   private cumFailedRequests = 0
 
-  // ─── Chaos state (4c) ─────────────────────────────────────────────────────
-  // Mutated only by node_failure / node_recover / partition_start /
-  // partition_end / cache_miss_storm_start / _end events. Read by the engine
-  // when scheduling events from behaviors and exposed read-only to behaviors
-  // via BehaviorContext getters.
+  // ─── Chaos state (4c, 6c) ─────────────────────────────────────────────────
+  // Mutated only by chaos start/end events. Read by the engine when
+  // scheduling events from behaviors and exposed read-only to behaviors via
+  // BehaviorContext getters.
   private failedNodes = new Set<string>()
   private partitions: Array<{ a: Set<string>; b: Set<string> }> = []
   private cacheHitRateOverrides = new Map<string, number>()
+  // 6c: degraded nodes carry a mode + intensity. Behaviors apply these via
+  // ctx.applyDegradation when computing effective latency/failure params.
+  private degradedNodes = new Map<string, DegradationState>()
 
   // ─── Pause / speed (4c) ───────────────────────────────────────────────────
   private paused = false
@@ -285,6 +291,24 @@ export class SimulationEngine {
       }
       return
     }
+    if (ev.kind === 'node_degraded_start' && ev.nodeId) {
+      const p = ev.payload as
+        | { mode?: DegradationState['mode']; intensity?: number; endsAt?: number }
+        | undefined
+      if (p?.mode && typeof p.intensity === 'number') {
+        this.degradedNodes.set(ev.nodeId, {
+          mode: p.mode,
+          intensity: Math.max(0, Math.min(1, p.intensity)),
+          startedAt: ev.at,
+          endsAt: p.endsAt ?? Number.POSITIVE_INFINITY,
+        })
+      }
+      return
+    }
+    if (ev.kind === 'node_degraded_end' && ev.nodeId) {
+      this.degradedNodes.delete(ev.nodeId)
+      return
+    }
     if (ev.kind === 'cache_miss_storm_start' && ev.nodeId) {
       this.cacheHitRateOverrides.set(ev.nodeId, 0)
       return
@@ -388,6 +412,8 @@ export class SimulationEngine {
         getCacheHitRateOverride: (id) => this.cacheHitRateOverrides.get(id),
         getRequest: (id) => this.requests.get(id),
         getEdgeState: (id) => this.getOrInitEdgeState(id),
+        getDegradation: (id) => this.degradedNodes.get(id),
+        applyDegradation: (base, id) => this.applyDegradation(base, id),
         ...(request ? { request } : {}),
       }
 
@@ -459,6 +485,30 @@ export class SimulationEngine {
       this.nodeState.set(nodeId, s)
     }
     return s
+  }
+
+  /**
+   * Phase 6c: scale latency p50/p99 and override failure_rate per the active
+   * degradation on `nodeId`. Returns a NEW object — never mutates input.
+   *   - 'slow'              → multiply p50 and p99 by (1 + intensity*9)
+   *   - 'errors'            → replace failure_rate with min(intensity, 1)
+   *   - 'slow_and_errors'   → both
+   * No degradation registered → returns base unchanged.
+   *
+   * Pure function of (base, engine.degradedNodes.get(nodeId)). Behaviors call
+   * this when computing effective per-request params.
+   */
+  private applyDegradation<P extends { p50: number; p99: number; failure_rate: number }>(
+    base: P,
+    nodeId: string,
+  ): P {
+    const deg = this.degradedNodes.get(nodeId)
+    if (!deg) return base
+    const slow = deg.mode === 'slow' || deg.mode === 'slow_and_errors'
+    const errs = deg.mode === 'errors' || deg.mode === 'slow_and_errors'
+    const mult = slow ? 1 + deg.intensity * 9 : 1
+    const errRate = errs ? Math.min(deg.intensity, 1) : base.failure_rate
+    return { ...base, p50: base.p50 * mult, p99: base.p99 * mult, failure_rate: errRate }
   }
 
   /** Phase 6b: mutable per-edge state, exposed to behaviors via context. */
@@ -593,16 +643,25 @@ export class SimulationEngine {
             (queueMaxDepth !== undefined && queueDepth >= Math.max(1, queueMaxDepth - 1)) ||
             (cap > 0 && inFlight >= cap)
           const isDown = this.failedNodes.has(n.id)
+          const deg = this.degradedNodes.get(n.id)
+          const nodeState: 'up' | 'degraded' | 'down' = isDown
+            ? 'down'
+            : deg
+              ? 'degraded'
+              : 'up'
           return [
             n.id,
             {
               nodeId: n.id,
               queueDepth,
               inFlight,
-              state: isDown ? ('down' as const) : ('up' as const),
+              state: nodeState,
               ...(queueMaxDepth !== undefined ? { queueMaxDepth } : {}),
               rejectionsInWindow: rejectionsPerNode.get(n.id) ?? 0,
               saturated,
+              ...(deg && !isDown
+                ? { degradationMode: deg.mode, degradationIntensity: deg.intensity }
+                : {}),
             },
           ]
         }),
