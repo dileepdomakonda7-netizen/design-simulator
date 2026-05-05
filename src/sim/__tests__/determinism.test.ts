@@ -1020,3 +1020,138 @@ describe('phase 6d replication', () => {
     expect(Math.max(...maxes)).toBeGreaterThan(0)
   })
 })
+
+/**
+ * Phase 6e: read_your_writes determinism. With write_ratio=0.3 and a high
+ * lag p99=500ms, every read after a write should escalate to primary
+ * (because the chosen replica's sampled lag almost always exceeds the small
+ * time-since-write budget). Two seed=42 runs must produce byte-identical
+ * event streams INCLUDING the consistency_violation events.
+ *
+ * Beyond determinism, this test asserts the lesson: violations grow when
+ * the application demands RYW correctness on a replicated database with
+ * meaningful lag.
+ */
+describe('phase 6e consistency models', () => {
+  function rywDesign(): Design {
+    const now = '2026-01-01T00:00:00.000Z'
+    return {
+      schemaVersion: 1,
+      id: 'd-ryw',
+      name: 't',
+      createdAt: now,
+      updatedAt: now,
+      nodes: [
+        {
+          id: 'cli', position: { x: 0, y: 0 }, label: 'C', notes: '', type: 'client',
+          params: { rps: 20, think_time_ms: 0, timeout_ms: 5000, retry_policy: { kind: 'none' } },
+        },
+        {
+          id: 'db', position: { x: 200, y: 0 }, label: 'D', notes: '', type: 'database',
+          params: {
+            subtype: 'relational',
+            replicas: 3,
+            read_capacity_rps: 5000,
+            write_capacity_rps: 1000,
+            replication_mode: 'async',
+            replication_lag_ms_p50: 50,
+            replication_lag_ms_p99: 500,
+            read_latency_ms_p50: 5,
+            read_latency_ms_p99: 30,
+            write_latency_ms_p50: 10,
+            write_latency_ms_p99: 80,
+            failure_rate: 0,
+            consistency_model: 'read_your_writes',
+          },
+        },
+      ],
+      edges: [
+        {
+          id: 'e1', source: 'cli', target: 'db', kind: 'sync_rpc',
+          params: {
+            network_latency_ms_p50: 1, network_latency_ms_p99: 5, timeout_ms: 3000,
+            retry_policy: { kind: 'none' },
+            circuit_breaker: { enabled: false, failure_threshold: 0.5, success_threshold: 3, half_open_timeout_ms: 5000 },
+            idempotent: false,
+          },
+        },
+      ],
+      annotations: [], sketches: [], viewport: { x: 0, y: 0, zoom: 1 },
+    }
+  }
+
+  async function runRyw(seed: number): Promise<{ events: SimEvent[] }> {
+    const events: SimEvent[] = []
+    const config: SimRunConfig = {
+      design: rywDesign(),
+      traffic: [
+        {
+          id: 'src', label: 'T', target_node_id: 'cli',
+          load_shape: { kind: 'constant', rps: 20 },
+          write_ratio: 0.3,
+        },
+      ],
+      chaos: [],
+      durationMs: 3000,
+      seed,
+      snapshotIntervalMs: 250,
+    }
+    const engine = new SimulationEngine(config, () => {}, (e) => events.push(e))
+    await engine.run()
+    return { events }
+  }
+
+  it('RYW: deterministic violations across seed=42 runs; seed=99 diverges', async () => {
+    const a = await runRyw(42)
+    const b = await runRyw(42)
+    expect(a.events).toEqual(b.events)
+
+    const c = await runRyw(99)
+    expect(computeDigest(a.events)).not.toBe(computeDigest(c.events))
+
+    // The lesson: with high replication lag and a writer-then-reader workload,
+    // RYW funnels reads to primary via consistency_violation events.
+    const violations = a.events.filter((e) => e.kind === 'consistency_violation')
+    expect(violations.length).toBeGreaterThan(0)
+    for (const v of violations) {
+      const p = v.payload as { model?: string; reason?: string }
+      expect(p.model).toBe('read_your_writes')
+      expect(p.reason).toBe('replica_too_stale_for_ryw')
+    }
+
+    // Writes carry writeTimestamp on their request_complete payloads.
+    const writeCompletes = a.events.filter((e) => {
+      if (e.kind !== 'request_complete' || e.nodeId !== 'db') return false
+      const p = e.payload as { writeTimestamp?: number } | undefined
+      return typeof p?.writeTimestamp === 'number'
+    })
+    expect(writeCompletes.length).toBeGreaterThan(0)
+  })
+
+  it('eventual: no consistency_violation events even with sustained writes', async () => {
+    const events: SimEvent[] = []
+    const design = rywDesign()
+    // Same shape but eventual instead of RYW.
+    const db = design.nodes.find((n) => n.id === 'db')!
+    if (db.type !== 'database') throw new Error('expected database')
+    db.params = { ...db.params, consistency_model: 'eventual' }
+    const config: SimRunConfig = {
+      design,
+      traffic: [
+        {
+          id: 'src', label: 'T', target_node_id: 'cli',
+          load_shape: { kind: 'constant', rps: 20 },
+          write_ratio: 0.3,
+        },
+      ],
+      chaos: [],
+      durationMs: 3000,
+      seed: 42,
+      snapshotIntervalMs: 250,
+    }
+    const engine = new SimulationEngine(config, () => {}, (e) => events.push(e))
+    await engine.run()
+    const violations = events.filter((e) => e.kind === 'consistency_violation')
+    expect(violations.length).toBe(0)
+  })
+})
