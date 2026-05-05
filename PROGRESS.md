@@ -1,5 +1,74 @@
 # Progress
 
+## v1 launch — sysdraw.vercel.app (in progress)
+
+The project is renamed from "Design Simulator" to **sysdraw**. v1 ships a public landing page, a canonical demo scenario, URL-sharable designs, and Vercel deployment configuration.
+
+### Code state
+
+`npm test` → 16/16. `npm run typecheck` / `lint` / `build` clean.
+
+### What landed in this prompt
+
+- **Renames** — `package.json` name, `index.html` title (+ OpenGraph / Twitter card meta), `SPEC.md` heading + intro line. Internal type/file/path names intentionally unchanged (the user still designs `Design` objects; `design-simulator` only appears as a product name surface).
+- **`vercel.json`** — framework=vite, build=`npm run build`, output=`dist`, plus a catch-all rewrite to `/` so client-side routes survive direct navigation.
+- **Router split** — `react-router-dom` mounted in `main.tsx`. `/` is the landing page; `/app` is the existing canvas application; everything else redirects home.
+- **Landing page** (`src/landing/LandingPage.tsx`) — hero with embedded looping demo iframe, "what is this" copy, 6-card concept grid (one active, five marked "Coming soon"), "why I built this" section, footer.
+- **Canonical demo** (`src/demos/circuitBreakerPartialFailure.ts`) — exports `DEMOS['cb-partial']` with the design + traffic + run config. `/app?demo=cb-partial` loads it, switches to Simulate mode, and renders a dismissible amber banner. `&autoplay=1` adds auto-start + 2-second-loop. `&embed=1` hides the toolbar + ControlPanel for the iframe hero.
+- **URL sharing** (`src/persistence/urlShare.ts`, `src/components/ShareButton.tsx`) — `lz-string` compress + base64 encode → `/app?d=<encoded>`. 8KB hard cap; oversized designs prompt for JSON export instead. Loading a shared URL prompts the user before clobbering their current design and saves a timestamped backup.
+- **Friendly error page** for malformed or schema-incompatible `?d=` URLs — schema validation rejection routes to a small "← Back to sysdraw" page rather than a blank white screen.
+- **README.md** — landing-page-aligned summary + quick-start + architecture pointers.
+- **`public/og-image.png`** — 1200×630 cream placeholder. **TODO before public launch:** replace with a real screenshot of the simulator mid-run on the canonical demo. The PNG is 3.6KB right now; a proper screenshot will be ~50–200KB.
+
+### URL-share format
+
+```
+?d=<lz-string-base64-of-Design-JSON>
+```
+
+`encodeDesignForUrl(design)` → `compressToEncodedURIComponent(JSON.stringify(design))`. `decodeDesignFromUrl(encoded)` always validates with the existing zod `validateDesign` (untrusted input). Hard-capped at 8KB encoded — typical Design weight is 1–3KB so most users never hit it.
+
+### Demo bundle structure
+
+`DemoBundle` ties together the design, the traffic-source list, the run config, and the human-readable banner blurb. Adding a new demo means: export a new `Design` object + add an entry to `DEMOS`. Followups (`backpressure-propagation`, `replication-lag-spike`, `consistency-models-comparison`) are left as TODOs in `circuitBreakerPartialFailure.ts`.
+
+### Acceptance status
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | `sysdraw.vercel.app` loads landing page | ⏳ awaiting Vercel hookup (manual) |
+| 2 | `/app?demo=cb-partial` runs the lesson | ✅ verified locally |
+| 3 | Demo banner dismissible | ✅ |
+| 4 | URL-sharing round-trip | ✅ verified locally |
+| 5 | `/app` (no params) loads localStorage | ✅ |
+| 6 | Phase 4–6 functionality intact | ✅ 16/16 tests, build clean |
+| 7 | Mobile readable, demo link clickable | ⏳ awaiting deploy + hand-test |
+| 8 | OpenGraph preview | ✅ tags wired; **og-image.png placeholder** |
+| 9 | GitHub repo renamed `sysdraw` | ⏳ awaiting `gh auth login` |
+| 10 | CI auto-deploy on push to main | ⏳ awaiting Vercel hookup |
+
+### Manual steps still required (need user / external auth)
+
+1. **`gh auth login`**, then `gh repo rename sysdraw` from this checkout. GitHub auto-redirects the old URL.
+2. **Vercel** — at <https://vercel.com/new>: import the renamed repo, accept defaults (Vite framework auto-detected from `vercel.json`), set production branch=`main`, deploy. Verify the Web Worker (sim) loads in the production Network tab — the worker import is `?worker` form which Vite emits as a separate file at build time.
+3. **`sysdraw.vercel.app` claim** — the subdomain is auto-assigned to the project name on the free plan; if `sysdraw` is taken, Vercel will assign `sysdraw-<hash>.vercel.app`. Document the actual production URL here on completion.
+4. **`og-image.png`** — replace `public/og-image.png` with a real 1200×630 screenshot of the canonical demo mid-run (around the t=2.5s mark, with the breaker open and the latency chart visible). Vercel auto-deploys on push.
+5. **Mobile hand-test** — visit the deployed site on a phone; confirm landing page reads + the "Try the demo →" link works. Document any breakage as a known limitation.
+
+### Decisions and v1 simplifications
+
+**Iframe embed for the hero, not a refactored embeddable component.** The hero embeds `/app?demo=cb-partial&autoplay=1&embed=1` as an `<iframe sandbox="allow-scripts allow-same-origin">`. Cheaper than restructuring `SimulateMode` to be a pure functional embed; the worker, the sim store, and the design store all stay co-located in `App` where they already work.
+
+**`embed=1` hides Toolbar + ControlPanel.** The hero shows the canvas + chaos timeline + metrics + event inspector — but no controls and no toolbar. The simulation runs itself.
+
+**`?demo=` switches to Simulate mode unconditionally.** A user clicking "Try the demo →" expects to see the simulation, not be dropped into Build mode for a design they didn't create.
+
+**localStorage is preserved across `?d=` and `?demo=` loads.** The user's existing design is saved as a timestamped "Auto-backup" before a `?d=` URL clobbers it. `?demo=` doesn't touch localStorage at all (the demo is in-memory only — a user closing the tab returns to their own design).
+
+**Catch-all SPA rewrite in `vercel.json`.** Without it, hitting `https://sysdraw.vercel.app/app` directly would 404 because there's no `app/index.html`. The rewrite serves `index.html` for any non-asset path so React Router can take over.
+
+---
+
 ## Phase 6e — Consistency Models (complete)
 
 **Phase 6 is complete.**
