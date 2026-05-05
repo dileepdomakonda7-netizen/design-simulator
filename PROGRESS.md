@@ -1,5 +1,58 @@
 # Progress
 
+## Phase 6b — Circuit Breakers (complete)
+
+`npm test` → 11/11
+`npm run typecheck` / `lint` / `build` all clean
+
+### Files
+
+- New: `src/sim/circuitBreaker.ts`
+- Modified: `src/sim/{types,engine,behaviors/types,behaviors/shared,behaviors/clientBehavior,behaviors/loadBalancerBehavior,behaviors/apiGatewayBehavior,behaviors/appServerBehavior,behaviors/cacheBehavior,behaviors/cdnBehavior}.ts`, `src/canvas/edges/SketchyEdge.tsx`, `src/sim-ui/MetricsPanel.tsx`, `src/sim/__tests__/determinism.test.ts`
+
+### Acceptance criteria
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | Backwards compat — Phase 6a designs run identically | ✅ |
+| 2 | Closed → Open transition fires `circuit_breaker_opened` | ✅ |
+| 3 | Open → Half-Open → Closed recovery cycle | ✅ |
+| 4 | Reduced load on downstream during open | ✅ — test 11: sends with breaker < sends without / 2 |
+| 5 | Determinism with breakers | ✅ |
+| 6 | Edge color/dashed by CB state | ✅ |
+| 7 | No interference with backpressure | ✅ |
+| 8 | Half-open is single-flight | ✅ — `halfOpenInFlight` bit gates probes |
+| 9 | typecheck / lint / build clean | ✅ |
+| 10 | Test suite 11/11 | ✅ |
+| 11 | No regressions in 6a or Phase 4 | ✅ |
+
+### Decisions and v1 simplifications
+
+**20-outcome sliding window, hard-coded.** Production CBs parametrize this. v1 keeps it constant — `failure_threshold = 0.5` cleanly means "10+ failures in last 20." Window must FILL before the breaker can open: avoids tripping on the first observed failure during warmup.
+
+**`half_open_timeout_ms` measured from `openedAt`.** Each transition into OPEN re-stamps `openedAt`, so a failed probe restarts the cool-down rather than resuming a previous one.
+
+**HALF_OPEN is single-flight.** Only one probe at a time. `halfOpenInFlight` bit set in `shouldReject` and cleared in `recordOutcome`. Production CBs do this — sending multiple concurrent probes to a recovering downstream defeats the point.
+
+**`request_reject` from downstream COUNTS as a failure.** Backpressure rejections (capacity / capacity_displaced) feed the breaker. This is what pairs CB with backpressure: overloaded downstream signals fast failure, upstream observes, breaker opens, sending stops, downstream gets room to drain.
+
+**Rejection BY THE BREAKER ITSELF does NOT count as a failure.** It's not an observation of downstream behavior — it's a decision the upstream made.
+
+**`appServerBehavior` extended to forward to its outgoing edge** on processing complete. Phase 6a treated app_server as a leaf; Phase 6b's acceptance #2 needs the chain `client → app → db` to exercise the `app → db` edge so the breaker on it can fire. Local processing slot is freed at `request_complete` (async-call model); the response comes back via `onRequestResponse`, which observes the breaker outcome before forwarding upstream. Phase 6a backpressure tests still pass.
+
+**Retries route through `emitWithBreaker`.** `planRetry` now uses `emitWithBreaker` instead of `forwardRequest` directly. Without this, retries would bypass the breaker — defeating the entire point. The breaker is what prevents retries from amplifying load on a failing downstream.
+
+### Commits in this phase
+
+1. `prompt-6b-edge-state-context` — engine.edgeState + getEdgeState + EdgeSnapshot + new SimEventKinds
+2. `prompt-6b-circuit-breaker-helper` — circuitBreaker.ts (shouldReject, recordOutcome, readSnapshot)
+3. `prompt-6b-emit-with-breaker-helper` — emitWithBreaker / observeOutcome helpers; planRetry routed through breaker
+4. `prompt-6b-behavior-integrations` — 6 outbound behaviors wired; appServerBehavior forwards to outgoing edge
+5. `prompt-6b-edge-visual-state` — SketchyEdge color by CB state + cumulative breaker rejects
+6. `prompt-6b-determinism-test` — breaker reduces send attempts vs retries-without-breaker
+
+---
+
 ## Phase 6a — Backpressure (complete)
 
 `npm run dev` → http://localhost:5173 → Simulate mode
