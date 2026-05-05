@@ -122,9 +122,8 @@ export function LandingPage() {
           >
             GitHub repo
           </a>
-          {/* TODO: replace with actual social link once shared. */}
           <a
-            href="{YOUR_LINK_HERE}"
+            href="https://github.com/dileepdomakonda7-netizen"
             className="underline underline-offset-2 hover:text-neutral-900"
             target="_blank"
             rel="noopener noreferrer"
