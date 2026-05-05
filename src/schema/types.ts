@@ -111,7 +111,12 @@ export interface DatabaseParams {
   read_queue_max_depth?: number
   write_queue_max_depth?: number // reserved; write-path queue is its own Phase 6 work
   rejection_policy?: 'reject_newest'
+  // Phase 6d replication lag. Default 'primary_only' when undefined preserves
+  // pre-6d behavior (no staleness, replica params irrelevant).
+  read_routing?: ReadRouting
 }
+
+export type ReadRouting = 'primary_only' | 'replica_only' | 'mixed'
 
 export interface QueueParams {
   max_depth: number // 0 = unbounded; > 0 = bounded, excess rejected per rejection_policy
@@ -333,6 +338,20 @@ export type ChaosEventSpec =
       duration_ms: number
       mode: DegradationMode
       intensity: number
+    }
+  | {
+      // Phase 6d: spike replication lag for an async-replicated database.
+      // Multiplier = 1 + intensity*9 (matches partial-failure 'slow' formula).
+      // While active, every replica read on the target database samples lag
+      // from a distribution scaled by the multiplier — the underlying
+      // replication_lag_ms_p50/p99 are unchanged. Models a write storm /
+      // network jitter / replica catching up from snapshot.
+      id: string
+      kind: 'replication_lag_spike'
+      node_id: string // must resolve to a 'database' node
+      at_ms: number
+      duration_ms: number
+      intensity: number // [0..1]
     }
 
 export type DegradationMode = 'slow' | 'errors' | 'slow_and_errors'

@@ -84,6 +84,7 @@ export const DatabaseParamsSchema = z.object({
   read_queue_max_depth: z.number().int().positive().optional(),
   write_queue_max_depth: z.number().int().positive().optional(),
   rejection_policy: z.enum(['reject_newest']).optional(),
+  read_routing: z.enum(['primary_only', 'replica_only', 'mixed']).optional(),
 })
 
 export const QueueParamsSchema = z.object({
@@ -239,6 +240,14 @@ export const ChaosEventSpecSchema = z.discriminatedUnion('kind', [
     at_ms: z.number().nonnegative(),
     duration_ms: z.number().positive(),
     mode: z.enum(['slow', 'errors', 'slow_and_errors']),
+    intensity: z.number().min(0).max(1),
+  }),
+  z.object({
+    id: z.string().min(1),
+    kind: z.literal('replication_lag_spike'),
+    node_id: z.string().min(1),
+    at_ms: z.number().nonnegative(),
+    duration_ms: z.number().positive(),
     intensity: z.number().min(0).max(1),
   }),
 ])
