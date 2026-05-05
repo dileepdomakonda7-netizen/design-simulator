@@ -125,7 +125,33 @@ export function ChaosTimeline() {
           }}
           disabled={design.nodes.length === 0}
         />
-        <Quick label="◐ Node degraded" onClick={() => {}} disabled tooltip="Phase 6" />
+        <Quick
+          label="🐌 Node degraded"
+          onClick={() => {
+            const target =
+              design.nodes.find(
+                (n) =>
+                  n.type === 'app_server' ||
+                  n.type === 'database' ||
+                  n.type === 'cache' ||
+                  n.type === 'cdn' ||
+                  n.type === 'pub_sub' ||
+                  n.type === 'object_storage' ||
+                  n.type === 'external_service',
+              ) ?? design.nodes[0]
+            if (!target) return
+            add({
+              id: nanoid(),
+              kind: 'node_degraded',
+              node_id: target.id,
+              at_ms: Math.round(durationMs / 2),
+              duration_ms: 1500,
+              mode: 'slow',
+              intensity: 0.7,
+            })
+          }}
+          disabled={design.nodes.length === 0}
+        />
       </div>
 
       <div className="px-3 pt-3 pb-2 border-b border-neutral-100 shrink-0">
@@ -329,6 +355,8 @@ function colorForKind(kind: ChaosEventSpec['kind']): string {
       return '#06b6d4'
     case 'saturate_node':
       return '#a855f7'
+    case 'node_degraded':
+      return '#ca8a04'
   }
 }
 
@@ -377,7 +405,8 @@ function ChaosRow({
           />
           {(spec.kind === 'node_crash' ||
             spec.kind === 'cache_miss_storm' ||
-            spec.kind === 'saturate_node') && (
+            spec.kind === 'saturate_node' ||
+            spec.kind === 'node_degraded') && (
             <SelectPair
               label={spec.kind === 'cache_miss_storm' ? 'cache' : 'node'}
               value={spec.node_id}
@@ -388,6 +417,40 @@ function ChaosRow({
               }
               onChange={(v) => onChange({ node_id: v })}
             />
+          )}
+          {spec.kind === 'node_degraded' && (
+            <>
+              <SelectPair
+                label="mode"
+                value={spec.mode}
+                options={[
+                  { id: 'slow', label: '🐌 slow' },
+                  { id: 'errors', label: '⚠️ errors' },
+                  { id: 'slow_and_errors', label: '🐌⚠️ both' },
+                ]}
+                onChange={(v) =>
+                  onChange({ mode: v as 'slow' | 'errors' | 'slow_and_errors' })
+                }
+              />
+              <label className="flex items-center gap-1.5 text-[11px] text-neutral-700">
+                <span className="w-20 shrink-0 text-neutral-500">intensity</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={spec.intensity}
+                  onChange={(e) => {
+                    const n = parseFloat(e.target.value)
+                    if (Number.isFinite(n)) onChange({ intensity: n })
+                  }}
+                  className="flex-1 min-w-0"
+                />
+                <span className="w-8 text-right font-mono text-[10px] text-neutral-500">
+                  {(spec.intensity * 100).toFixed(0)}%
+                </span>
+              </label>
+            </>
           )}
           {spec.kind === 'traffic_spike' && (
             <NumPair
@@ -429,6 +492,8 @@ function describeSpec(spec: ChaosEventSpec, nodes: Node[]): string {
       return `Miss-storm ${labelOf(spec.node_id)}`
     case 'saturate_node':
       return `Saturate ${labelOf(spec.node_id)}`
+    case 'node_degraded':
+      return `Degrade ${labelOf(spec.node_id)} · ${spec.mode} (${(spec.intensity * 100).toFixed(0)}%)`
   }
 }
 
