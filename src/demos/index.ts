@@ -15,6 +15,7 @@ import { scenario as networkPartition } from './networkPartition'
 import { scenario as saturatingFanOut } from './saturatingFanOut'
 import { scenario as thunderingHerd } from './thunderingHerd'
 import { scenario as syncReplicationTrap } from './syncReplicationTrap'
+import { scenario as hotShard } from './hotShard'
 
 export const DEMO_SCENARIOS: readonly DemoScenario[] = [
   circuitBreakerPartialFailure,
@@ -25,6 +26,7 @@ export const DEMO_SCENARIOS: readonly DemoScenario[] = [
   saturatingFanOut,
   thunderingHerd,
   syncReplicationTrap,
+  hotShard,
 ]
 
 const SCENARIOS_BY_SLUG = new Map(DEMO_SCENARIOS.map((s) => [s.slug, s]))
