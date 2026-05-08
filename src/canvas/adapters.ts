@@ -5,13 +5,21 @@ import type { Node, Edge } from '@/schema/types'
  * Schema → React Flow conversion. We pass the entire schema node through
  * `data.schemaNode` so per-type custom node components can read narrowed
  * params without React Flow having to know about discriminated unions.
+ *
+ * `width`/`height` mirror BaseNode's defaults — React Flow's MiniMap reads
+ * these to draw node rectangles. Without them the minimap renders blank.
  */
+export const NODE_WIDTH = 180
+export const NODE_HEIGHT = 80
+
 export function toRFNode(node: Node): RFNode<{ schemaNode: Node }> {
   return {
     id: node.id,
     type: node.type, // dispatches to the matching nodeTypes entry
     position: node.position,
     data: { schemaNode: node },
+    width: NODE_WIDTH,
+    height: NODE_HEIGHT,
   }
 }
 

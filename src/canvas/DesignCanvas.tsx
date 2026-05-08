@@ -200,9 +200,18 @@ function DesignCanvasInner() {
         x: event.clientX,
         y: event.clientY,
       })
-      addNode(createDefaultNode(raw, position))
+      const newNode = createDefaultNode(raw, position)
+      addNode(newNode)
+      // Select the freshly dropped node so the inspector populates with its
+      // params immediately. Defer one tick so the schema → RF sync effect
+      // runs before we patch selection.
+      queueMicrotask(() => {
+        setRfNodes((prev) =>
+          prev.map((n) => ({ ...n, selected: n.id === newNode.id })),
+        )
+      })
     },
-    [reactFlow, addNode],
+    [reactFlow, addNode, setRfNodes],
   )
 
   return (
@@ -231,7 +240,14 @@ function DesignCanvasInner() {
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#d4d4d8" />
         <Controls showInteractive={false} />
-        <MiniMap pannable zoomable nodeColor={() => '#a3a3a3'} maskColor="rgba(0,0,0,0.06)" />
+        <MiniMap
+          pannable
+          zoomable
+          nodeColor={() => '#525252'}
+          nodeStrokeColor={() => '#171717'}
+          nodeStrokeWidth={2}
+          maskColor="rgba(0,0,0,0.06)"
+        />
       </ReactFlow>
 
       {/* Annotation layer renders ABOVE the graph but its pointer-events flip

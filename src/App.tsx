@@ -10,6 +10,7 @@ import { SimDebugPage } from '@/sim/debugPage/SimDebugPage'
 import { SimulateMode, type DemoModeOptions } from '@/sim-ui/SimulateMode'
 import { getScenario, type DemoScenario } from '@/demos'
 import { decodeDesignFromUrl } from '@/persistence/urlShare'
+import { useDocumentHead } from '@/hooks/useDocumentHead'
 
 // ─── Placeholder views (build replaced by DesignCanvas) ───────────────────────
 
@@ -19,7 +20,7 @@ function SketchModePlaceholder() {
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 max-w-sm">
         <h2 className="text-lg font-semibold text-gray-800 mb-1">Sketch Mode</h2>
         <p className="text-sm text-gray-500">
-          Freehand canvas and &ldquo;Parse to graph&rdquo; arrive in Prompt 5.
+          Freehand canvas and &ldquo;Parse to graph&rdquo; — coming soon.
         </p>
       </div>
     </div>
@@ -49,6 +50,12 @@ export default function App() {
 
   const scenario: DemoScenario | undefined = demoName ? getScenario(demoName) : undefined
   const [shareError, setShareError] = useState<string | null>(null)
+
+  useDocumentHead({
+    title: scenario ? `sysdraw · ${scenario.cardLabel}` : 'sysdraw',
+    pathAndQuery: scenario ? `/app?demo=${scenario.slug}` : '/app',
+    ...(scenario ? { description: scenario.cardBlurb } : {}),
+  })
 
   useEffect(() => {
     if (scenario) {

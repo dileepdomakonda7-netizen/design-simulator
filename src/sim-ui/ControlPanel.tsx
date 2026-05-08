@@ -84,7 +84,14 @@ export function ControlPanel({
 
       <div className="h-5 w-px bg-neutral-200" />
 
-      <NumberInput label="seed" value={seed} onChange={setSeed} disabled={inputsLocked} width={70} />
+      <NumberInput
+        label="seed"
+        value={seed}
+        onChange={setSeed}
+        disabled={inputsLocked}
+        width={70}
+        min={0}
+      />
       <NumberInput
         label="duration"
         value={durationMs}
@@ -92,8 +99,18 @@ export function ControlPanel({
         disabled={inputsLocked}
         width={90}
         suffix="ms"
+        min={1}
+        max={600000}
       />
-      <NumberInput label="rps" value={rps} onChange={setRps} disabled={inputsLocked} width={60} />
+      <NumberInput
+        label="rps"
+        value={rps}
+        onChange={setRps}
+        disabled={inputsLocked}
+        width={60}
+        min={1}
+        max={10000}
+      />
 
       <div className="h-5 w-px bg-neutral-200" />
 
@@ -167,6 +184,8 @@ function NumberInput({
   disabled,
   width,
   suffix,
+  min = 0,
+  max,
 }: {
   label: string
   value: number
@@ -174,19 +193,27 @@ function NumberInput({
   disabled: boolean
   width: number
   suffix?: string
+  min?: number
+  max?: number
 }) {
   return (
     <label className="flex items-center gap-1 text-xs text-neutral-500">
       <span>{label}</span>
       <input
         type="number"
-        min={1}
+        min={min}
+        {...(max !== undefined ? { max } : {})}
         step={1}
         value={value}
         disabled={disabled}
+        onFocus={(e) => e.currentTarget.select()}
         onChange={(e) => {
           const n = parseInt(e.target.value, 10)
-          if (Number.isFinite(n) && n > 0) onChange(n)
+          if (!Number.isFinite(n)) return
+          let clamped = n
+          if (clamped < min) clamped = min
+          if (max !== undefined && clamped > max) clamped = max
+          onChange(clamped)
         }}
         style={{ width }}
         className="border border-neutral-300 rounded px-1.5 py-0.5 text-xs font-mono tabular-nums disabled:bg-neutral-100 disabled:text-neutral-400"

@@ -57,7 +57,7 @@ export function FileMenu() {
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg py-1 z-20 min-w-40">
+        <div className="absolute top-full right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg py-1 z-50 min-w-40">
           <button
             className={itemClass}
             onClick={() => {
@@ -90,7 +90,7 @@ export function FileMenu() {
             Import JSON…
           </button>
           <div className="my-1 border-t border-gray-100" />
-          <button className={itemClass} disabled title="Available in Prompt 5">
+          <button className={itemClass} disabled title="Coming soon">
             Import Image… (coming soon)
           </button>
         </div>

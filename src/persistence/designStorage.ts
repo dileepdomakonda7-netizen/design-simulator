@@ -65,3 +65,37 @@ export function listDesigns(): DesignsIndexEntry[] {
     return []
   }
 }
+
+/** True for the demo-template designs registered in src/demos/. They share
+ *  the `demo-` id prefix; the auto-save subscriber skips them so visiting
+ *  /app?demo=<slug> never pollutes a user's design library. */
+export function isDemoDesignId(id: string): boolean {
+  return id.startsWith('demo-')
+}
+
+/**
+ * One-time cleanup of pre-fix-era demo designs that were auto-persisted.
+ * Removes both the design records and their index entries; user-saved
+ * designs are untouched. Called from main.tsx on app boot.
+ *
+ * Returns the number of demo records removed (for diagnostic logging /
+ * future reset-button reuse).
+ */
+export function clearPersistedDemoDesigns(): number {
+  let removed = 0
+  try {
+    const index = listDesigns()
+    const userOwned = index.filter((e) => !isDemoDesignId(e.id))
+    const demoEntries = index.filter((e) => isDemoDesignId(e.id))
+    for (const e of demoEntries) {
+      localStorage.removeItem(`${PREFIX}${e.id}`)
+      removed++
+    }
+    if (removed > 0) {
+      localStorage.setItem(INDEX_KEY, JSON.stringify(userOwned))
+    }
+  } catch (err) {
+    console.error('[designStorage] Failed to clear demo designs:', err)
+  }
+  return removed
+}

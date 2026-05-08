@@ -91,6 +91,7 @@ export function NumberField({
           value={local}
           onChange={(e) => handleChange(e.target.value)}
           onBlur={flush}
+          onFocus={(e) => e.currentTarget.select()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
           }}

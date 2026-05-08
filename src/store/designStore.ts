@@ -12,7 +12,7 @@ import type {
   ComponentType,
 } from '@/schema/types'
 import { createDefaultDesign } from '@/schema/defaults'
-import { saveDesign } from '@/persistence/designStorage'
+import { saveDesign, isDemoDesignId } from '@/persistence/designStorage'
 
 // ─── State shape ──────────────────────────────────────────────────────────────
 
@@ -281,5 +281,10 @@ export const useDesignTemporalStore = () => useStore(useDesignStore.temporal)
 // with a 500ms debounce (SPEC Section 11).
 
 useDesignStore.subscribe((state) => {
+  // Demo-template designs (id prefix `demo-`) are read-only fixtures the
+  // /app loader injects. Persisting them would clutter the user's design
+  // library and cause "the most recently visited demo" to load on a
+  // pristine /app visit. Skip those.
+  if (isDemoDesignId(state.design.id)) return
   debouncedSave(state.design)
 })

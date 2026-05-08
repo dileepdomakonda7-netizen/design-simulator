@@ -1,5 +1,59 @@
 # Progress
 
+## v1 launch — bug sweep from end-to-end report (May 8, 2026)
+
+Worked through the 24-bug end-to-end report (P0–P3 + quick wins). All P0/P1/P2/P3 items addressed across nine logical batches; tests still 24/24, build clean.
+
+### Fixes by severity
+
+**P0 (visible demo bugs)**
+- **#1 File menu off-screen / behind inspector** — `FileMenu` anchor switched from `left-0` to `right-0`; `z-20` → `z-50` so it paints above the Inspector.
+- **#2 Toast wraps to 1-char column** — `ShareButton` toast given an explicit `w-72 max-w-[90vw]` plus `role="status" aria-live="polite"`.
+- **#3 React-Flow minimap blank** — `toRFNode` now stamps `width: 180, height: 80` (mirrors `BaseNode` defaults) so MiniMap can draw node rectangles. Both `DesignCanvas` and `SimulationCanvas` pass `nodeColor`/`nodeStrokeColor`/`nodeStrokeWidth` to MiniMap.
+- **#4 Embed clips right edge** — `SimulationCanvas` now passes `fitView fitViewOptions={{ padding: 0.15 }}` instead of replaying the persisted Build-mode viewport, so the iframe always shows the whole graph.
+- **#5 Cache-stampede narrative ↔ result mismatch** — design re-tuned to actually saturate the database during the cache-miss storm: `client.rps 50 → 200`, `db.read_capacity_rps 200 → 15`, `db.read_queue_max_depth 50 → 20`, `db.read_latency_ms_p50 20 → 100`, `p99 80 → 400`. Smoke-checked: non-zero `request_reject` events at `db` during 2000–4000ms.
+- **#6 Cumulative counts off-by-one (retry-storm)** — `MetricsPanel` adds an `in flight` row computed as `arrived − completed − failed`; the math now closes. Surfaced in the panel header summary as `… ⏳ …` too.
+
+**P1 (validation, copy, UX)**
+- **#7 "1 instances"** — `AppServerNode` and `PubSubNode` now pluralize.
+- **#8 No bounds on chaos / runner inputs** — `ControlPanel.NumberInput` now accepts `min/max` and clamps on commit. `seed` `min=0`; `duration` `min=1, max=600000`; `rps` `min=1, max=10000`. `ChaosTimeline.NumPair` extended with `min/max`; `at` clamped to `[0, durationMs-1]`, `duration` clamped to `[1, durationMs - at]`, `multiplier` clamped to `[1, 100]`.
+- **#9 Failure-rate slider clipped** — `SliderField` label width `w-32 → w-28`, gap `gap-2 → gap-1.5` between slider and percent display, percent column tightened `w-10 → w-9`.
+- **#10 "Prompt 5" leak** — `SketchModePlaceholder` and `FileMenu`'s "Import Image…" tooltip now say "coming soon" instead.
+- **#11 `atMs=` in cache-stampede banner** — replaced with "between t=2s and t=4s".
+- **#12 `/app` boots into a stale demo** — `designStore.subscribe` now skips persistence for any design whose id starts with `demo-` (templates only). One-time migration in `main.tsx` calls `clearPersistedDemoDesigns()` to wipe the demo entries already present in users' localStorage.
+- **#13 Drop doesn't auto-select node** — `DesignCanvas.onDrop` calls `setRfNodes` after the schema sync to mark the freshly-dropped node `selected: true`; the inspector populates instantly.
+- **#14 Number-input bumps don't replace** — `NumberField`, `NumPair`, and `ControlPanel.NumberInput` all gained `onFocus={(e) => e.currentTarget.select()}`.
+
+**P2 (a11y / per-route head)**
+- **#15 White focus ring** — global `:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }` in `index.css`.
+- **#16 Palette items not focusable** — each row gets `role="listitem"`, `tabIndex=0`, `aria-label="Add <Type> node"`, and an Enter/Space keyboard handler that calls `addNode(createDefaultNode(type, {x:240, y:240}))`. Container tagged `role="list" aria-label="Add node palette"`.
+- **#17 No `<main>` / skip link on `/`** — `LandingPage` wraps its content in `<main id="main-content">` and renders a "Skip to content" link as the first focusable element.
+- **#18 og/title stuck on landing** — new `useDocumentHead({ title, description?, pathAndQuery })` hook updates `document.title`, `og:title`, `og:url`, `twitter:title`, `description`, `og:description`, `twitter:description`, and `<link rel="canonical">` per route. Wired into `LandingPage` and `App.tsx` (so `/app?demo=cache-stampede` shares as "sysdraw · Cache stampede" with the right canonical link).
+- **Quick wins** — `ModeToggle` gets `role="group" aria-label="Mode"` and `aria-pressed` per button. ShareButton toast gains `aria-live="polite"`. `index.html` adds a `<link rel="canonical">` and a small SVG favicon.
+
+**P3 (perf / persistence / polish)**
+- **#19 Worker leak (7-11 fetches)** — `SimulateMode.start` no longer terminates the worker between runs; it spawns one on first start and reuses it via `await api.cancel()` before the next `api.start()`. `reset` likewise just cancels — termination only happens on component unmount. The autoplay-loop hero now uses a single worker for the lifetime of the iframe.
+- **#20 No way to clear auto-seeded demos** — covered by #12: the pre-fix-era demo records get auto-cleared once on app boot. After this fix, they never get persisted again.
+- **#21 Event-log IDs jumbled** — `EventInspector.recent` now sorts by `(at desc, id desc)` (the priority queue's tie-break), so events with identical timestamps render in the order the engine processed them.
+- **#22 Out-of-range chaos changes digest** — already filtered in `compileChaosPlan` (`spec.at_ms >= durationMs` is skipped before any events are emitted). The new chaos-input clamps (#8) prevent users from entering values that fall in this range in the first place.
+- **#23 Demos differ on preloaded chaos** — empty-timeline copy clarified: "No chaos events scheduled. Click a button above to add one." Designs themselves are kept as-is; retry-storm's empty timeline is the lesson.
+- **#24 "Externai" truncation** — `Palette` swapped `truncate` for `whitespace-nowrap pr-2` so labels fully render at the palette's natural width.
+
+### What this commit does NOT touch
+
+- The Pen tool quick-win check ("confirm canvas annotation feature still saves") is a hand-test the user requested; no code change here.
+- A "?" shortcut cheat sheet (quick win) — left out as new feature.
+- Manifest entry for installability — favicon shipped as SVG; full PWA manifest deferred.
+- Engine semantics for sync replication and parallel fan-out — still flagged in the May 8 scenario doc, not part of this bug sweep.
+
+### Verification
+
+- `npm run typecheck` clean
+- `npm run lint` clean
+- `npm test` 24/24 (existing determinism suite — no regressions; the cache-stampede determinism test still passes after the parameter retune since digests are seed-locked, not value-locked)
+- `npm run build` clean (~990 KB main bundle, same as before)
+- Smoke check: cache-stampede at seed=42 produces non-zero `db` `request_reject` events during the 2000–4000ms storm window.
+
 ## v1 launch — curated demo scenarios (May 8, 2026)
 
 The 6-card concept grid on the landing page is now driven by a registry of pre-configured Design + chaos plan + traffic scenarios, not hand-rolled placeholders. Seven mandatory scenarios shipped + Path B for hot-shard. Sync-replication-trap is registered as `comingSoon` because the v1 engine does not model sync replication blocking.

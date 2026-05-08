@@ -13,7 +13,7 @@ export function AppServerNode({ data, selected }: NodeProps<RFNode<Data, 'app_se
   return (
     <BaseNode schemaNode={node} icon={<AppServerIcon />} selected={selected ?? false}>
       <div className="font-caveat text-sm text-neutral-500">
-        {node.params.instances} instances
+        {node.params.instances} {node.params.instances === 1 ? 'instance' : 'instances'}
       </div>
     </BaseNode>
   )

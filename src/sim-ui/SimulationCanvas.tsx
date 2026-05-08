@@ -65,7 +65,6 @@ export function SimulationCanvas() {
 function Inner() {
   const schemaNodes = useDesignStore((s) => s.design.nodes)
   const schemaEdges = useDesignStore((s) => s.design.edges)
-  const viewport = useDesignStore((s) => s.design.viewport)
   const failedNodeIds = useFailedNodeIds()
   const degradedNodeIds = useDegradedNodeIds()
 
@@ -95,7 +94,13 @@ function Inner() {
         edges={rfEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        defaultViewport={viewport}
+        // Fit the whole graph into the viewport on mount and whenever the
+        // node set changes. Build mode persists its own pan/zoom; the
+        // simulator should always show the entire design — especially in
+        // the embedded landing-page hero where the iframe's container size
+        // is independent of whatever zoom the user left in build mode.
+        fitView
+        fitViewOptions={{ padding: 0.15 }}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable
@@ -106,7 +111,14 @@ function Inner() {
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#d4d4d8" />
         <Controls showInteractive={false} />
-        <MiniMap pannable zoomable nodeColor={() => '#a3a3a3'} maskColor="rgba(0,0,0,0.06)" />
+        <MiniMap
+          pannable
+          zoomable
+          nodeColor={() => '#525252'}
+          nodeStrokeColor={() => '#171717'}
+          nodeStrokeWidth={2}
+          maskColor="rgba(0,0,0,0.06)"
+        />
         <LoadBars />
         <DegradedBadges />
       </ReactFlow>

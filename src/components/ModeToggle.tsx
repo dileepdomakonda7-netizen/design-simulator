@@ -11,11 +11,16 @@ export function ModeToggle() {
   const setMode = useModeStore((s) => s.setMode)
 
   return (
-    <div className="flex rounded-md border border-gray-300 overflow-hidden text-sm font-medium">
+    <div
+      className="flex rounded-md border border-gray-300 overflow-hidden text-sm font-medium"
+      role="group"
+      aria-label="Mode"
+    >
       {MODES.map(({ value, label }) => (
         <button
           key={value}
           onClick={() => setMode(value)}
+          aria-pressed={mode === value}
           className={[
             'px-3 py-1.5 transition-colors',
             mode === value

@@ -28,8 +28,8 @@ function buildDesign(): Design {
         notes: '',
         type: 'client',
         params: {
-          rps: 50,
-          think_time_ms: 20,
+          rps: 200,
+          think_time_ms: 5,
           timeout_ms: 5000,
           retry_policy: { kind: 'none' },
         },
@@ -58,17 +58,23 @@ function buildDesign(): Design {
         params: {
           subtype: 'kv',
           replicas: 1,
-          read_capacity_rps: 200,
+          // Tight in-flight cap + slow reads + a small queue together
+          // guarantee saturation during the cache-miss storm:
+          //   200 rps × ~150ms avg latency = ~30 in-flight steady state,
+          //   way above cap=15. Queue (20) fills, then rejects.
+          // At baseline (90% cache hit), DB sees 20 rps × 0.15s = ~3 in-flight,
+          // well under cap, so no rejections in non-storm windows.
+          read_capacity_rps: 15,
           write_capacity_rps: 1000,
           replication_mode: 'async',
           replication_lag_ms_p50: 0,
           replication_lag_ms_p99: 0,
-          read_latency_ms_p50: 20,
-          read_latency_ms_p99: 80,
+          read_latency_ms_p50: 100,
+          read_latency_ms_p99: 400,
           write_latency_ms_p50: 20,
           write_latency_ms_p99: 80,
           failure_rate: 0,
-          read_queue_max_depth: 50,
+          read_queue_max_depth: 20,
           rejection_policy: 'reject_newest',
         },
       },
@@ -120,7 +126,7 @@ function buildTraffic(_design: Design): TrafficSource[] {
       id: 'demo-src',
       label: 'Demo traffic',
       target_node_id: 'cli',
-      load_shape: { kind: 'constant', rps: 50 },
+      load_shape: { kind: 'constant', rps: 200 },
     },
   ]
 }
@@ -132,8 +138,8 @@ export const scenario: DemoScenario = {
     'The cache normally absorbs 90% of reads. When it fails, the database queue saturates and rejections cascade.',
   bannerHeadline: 'Cache stampede',
   bannerBody:
-    'The cache normally absorbs 90% of reads. When it fails (atMs=2000–4000), every request hits the database, the database queue saturates, and rejections cascade upstream. This is why cache layers are the most fragile thing in your system.',
+    'The cache normally absorbs 90% of reads. When it goes cold between t=2s and t=4s, every request hits the database, the database queue saturates, and rejections cascade upstream. This is why cache layers are the most fragile thing in your system.',
   buildDesign,
   buildTraffic,
-  defaultSimConfig: { seed: 42, durationMs: 5000, rps: 50 },
+  defaultSimConfig: { seed: 42, durationMs: 5000, rps: 200 },
 }

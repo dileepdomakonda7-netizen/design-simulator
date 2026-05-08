@@ -127,19 +127,25 @@ export function SimulateMode({
       const cfg = buildConfig(seed, durationMs, rps)
       if (!cfg) return
 
-      // Tear down any prior worker.
-      apiRef.current?.cancel()
-      workerRef.current?.terminate()
+      // Reuse the existing worker across runs. Spawning a fresh Worker on
+      // every Run (or every loop iteration in autoplay-embed mode) caused
+      // the landing-page hero to leak ~1 worker / 5s — visible as repeated
+      // `worker.js` requests in the Network panel. Cancel pending work on
+      // the existing worker before re-driving it.
+      let api = apiRef.current
+      if (!api) {
+        const worker = new SimWorker()
+        api = Comlink.wrap<SimulationWorkerApi>(worker)
+        workerRef.current = worker
+        apiRef.current = api
+      } else {
+        await api.cancel()
+      }
 
       clearStream()
       allEventsRef.current = []
       setConfig(cfg)
       setStatus('running')
-
-      const worker = new SimWorker()
-      const api = Comlink.wrap<SimulationWorkerApi>(worker)
-      workerRef.current = worker
-      apiRef.current = api
       await api.setSpeed(speed)
 
       const onEvent = (ev: SimEvent) => {
@@ -187,10 +193,9 @@ export function SimulateMode({
   }, [setStatus])
 
   const reset = useCallback(() => {
-    apiRef.current?.cancel()
-    workerRef.current?.terminate()
-    workerRef.current = null
-    apiRef.current = null
+    // Cancel the running run but KEEP the worker alive — it's reused on the
+    // next start. Termination only happens on component unmount.
+    void apiRef.current?.cancel()
     clearStream()
     setConfig(null)
     setStatus('idle')

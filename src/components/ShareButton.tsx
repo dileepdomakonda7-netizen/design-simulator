@@ -58,8 +58,10 @@ export function ShareButton() {
       </button>
       {toast && (
         <div
+          role="status"
+          aria-live="polite"
           className={[
-            'absolute right-0 top-full mt-1 max-w-sm text-xs rounded border px-2 py-1.5 shadow-sm whitespace-normal z-50',
+            'absolute right-0 top-full mt-1 w-72 max-w-[90vw] text-xs rounded border px-2.5 py-1.5 shadow-sm whitespace-normal z-50',
             toast.kind === 'ok'
               ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
               : 'bg-red-50 border-red-200 text-red-900',

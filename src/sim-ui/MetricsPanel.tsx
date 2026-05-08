@@ -85,7 +85,12 @@ export function MetricsPanel() {
         <span className="font-caveat text-base text-neutral-700">Metrics</span>
         {c && (
           <span className="text-[10px] text-neutral-500 font-mono">
-            {c.totalRequestsCompleted}✓ / {c.totalRequestsFailed}✗ / {c.totalRequestsArrived} in
+            {c.totalRequestsCompleted}✓ / {c.totalRequestsFailed}✗ /{' '}
+            {Math.max(
+              0,
+              c.totalRequestsArrived - c.totalRequestsCompleted - c.totalRequestsFailed,
+            )}
+            ⏳ / {c.totalRequestsArrived} in
           </span>
         )}
       </header>
@@ -232,6 +237,21 @@ export function MetricsPanel() {
           <Stat label="arrived" value={c?.totalRequestsArrived ?? 0} />
           <Stat label="completed" value={c?.totalRequestsCompleted ?? 0} />
           <Stat label="failed" value={c?.totalRequestsFailed ?? 0} color="text-red-700" />
+          {/* Math closure: arrived = completed + failed + in-flight. The
+              `in flight` row catches requests still mid-pipeline at
+              simulation_end (typical in retry-storm-style workloads where
+              the last few arrivals are paused inside an exponential
+              backoff retry when the run terminates). */}
+          <Stat
+            label="in flight"
+            value={Math.max(
+              0,
+              (c?.totalRequestsArrived ?? 0) -
+                (c?.totalRequestsCompleted ?? 0) -
+                (c?.totalRequestsFailed ?? 0),
+            )}
+            color="text-neutral-500"
+          />
           <Stat label="rejected" value={c?.totalRequestsRejected ?? 0} color="text-red-600" />
           <Stat label="timed out" value={c?.totalRequestsTimedOut ?? 0} color="text-orange-600" />
           <Stat

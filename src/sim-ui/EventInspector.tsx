@@ -15,8 +15,15 @@ export function EventInspector() {
 
   const selected = selectedId !== null ? byId.get(selectedId) : null
 
-  // Most-recent 100 events for the log table.
-  const recent = useMemo(() => events.slice(-100).reverse(), [events])
+  // Most-recent 100 events for the log table. Sort by (at desc, id desc) so
+  // events at the same virtual timestamp display in their priority-queue order
+  // — the same chronology the engine processed them in. Without this sort, the
+  // raw callback order (from the worker → main thread) interleaves events
+  // whose timestamps tie, producing a confusing 'jump' in displayed ids.
+  const recent = useMemo(() => {
+    const lastN = events.slice(-100)
+    return [...lastN].sort((a, b) => b.at - a.at || b.id - a.id)
+  }, [events])
 
   const causalChain = useMemo<SimEvent[]>(() => {
     if (!selected) return []

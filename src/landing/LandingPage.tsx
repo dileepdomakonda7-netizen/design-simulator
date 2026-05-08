@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { DEMO_SCENARIOS } from '@/demos'
+import { useDocumentHead } from '@/hooks/useDocumentHead'
 
 /**
  * Public landing page at /. Built voice, no marketing fluff.
@@ -37,8 +38,21 @@ function useIsMobile(): boolean {
 
 export function LandingPage() {
   const isMobile = useIsMobile()
+  useDocumentHead({
+    title: 'sysdraw — distributed systems simulator',
+    description:
+      'A deterministic simulator for backpressure, circuit breakers, partial failures, replication lag, and consistency models.',
+    pathAndQuery: '/',
+  })
   return (
     <div className="min-h-screen bg-[#fdfaf3] text-neutral-900 flex flex-col">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:bg-white focus:px-3 focus:py-1.5 focus:rounded focus:border focus:border-neutral-400 focus:text-sm"
+      >
+        Skip to content
+      </a>
+      <main id="main-content">
       {/* ─── Hero ────────────────────────────────────────────────────── */}
       <section className="px-6 md:px-12 pt-12 md:pt-16 pb-8 max-w-6xl w-full mx-auto">
         <h1 className="font-caveat text-5xl md:text-7xl leading-tight text-neutral-900">
@@ -156,6 +170,8 @@ export function LandingPage() {
           </a>
         </div>
       </section>
+
+      </main>
 
       {/* ─── Footer ────────────────────────────────────────────────── */}
       <footer className="mt-auto px-6 md:px-12 py-6 border-t border-neutral-200 text-xs text-neutral-500 text-center">

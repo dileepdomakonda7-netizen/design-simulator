@@ -4,6 +4,14 @@ import { BrowserRouter, Route, Routes, Navigate } from 'react-router-dom'
 import './index.css'
 import App from './App'
 import { LandingPage } from './landing/LandingPage'
+import { clearPersistedDemoDesigns } from './persistence/designStorage'
+
+// One-time migration for users who landed before the auto-save subscriber
+// learned to skip demo designs: drop any `design:demo-*` records and their
+// index entries. Cheap (a few localStorage reads + writes); runs once per
+// page load. After this fix lands, no new demo designs ever get persisted,
+// so future calls find nothing to remove.
+clearPersistedDemoDesigns()
 
 const rootEl = document.getElementById('root')
 if (rootEl === null) throw new Error('#root element not found')

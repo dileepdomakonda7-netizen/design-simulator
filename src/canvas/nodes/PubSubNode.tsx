@@ -13,7 +13,7 @@ export function PubSubNode({ data, selected }: NodeProps<RFNode<Data, 'pub_sub'>
   return (
     <BaseNode schemaNode={node} icon={<PubSubIcon />} selected={selected ?? false}>
       <div className="font-caveat text-sm text-neutral-500">
-        {node.params.subscriber_count} subs
+        {node.params.subscriber_count} {node.params.subscriber_count === 1 ? 'sub' : 'subs'}
       </div>
     </BaseNode>
   )

@@ -1,4 +1,6 @@
 import { COMPONENT_TYPES, type ComponentType } from '@/schema/types'
+import { createDefaultNode } from '@/schema/defaults'
+import { useDesignStore } from '@/store/designStore'
 import { useUIStore } from '@/store/uiStore'
 
 import { ClientIcon } from './nodes/icons/ClientIcon'
@@ -69,17 +71,36 @@ export function Palette() {
           {collapsed ? '▸' : '◂'}
         </button>
       </header>
-      <div className={collapsed ? 'p-1' : 'p-1.5 max-h-[70vh] overflow-y-auto'}>
+      <div
+        className={collapsed ? 'p-1' : 'p-1.5 max-h-[70vh] overflow-y-auto'}
+        role="list"
+        aria-label="Add node palette"
+      >
         {COMPONENT_TYPES.map((t) => {
           const Icon = ICON_MAP[t]
           const label = LABEL_MAP[t]
           return (
             <div
               key={t}
+              role="listitem"
+              tabIndex={0}
               draggable
               onDragStart={(e) => onDragStart(e, t)}
+              onKeyDown={(e) => {
+                // Keyboard fallback for the drag-and-drop palette: Enter or
+                // Space adds the node at a default position near the canvas
+                // origin. Pointer users still get the full drag-target
+                // affordance.
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  useDesignStore.getState().addNode(
+                    createDefaultNode(t, { x: 240, y: 240 }),
+                  )
+                }
+              }}
+              aria-label={`Add ${label} node`}
               className={[
-                'flex items-center rounded cursor-grab active:cursor-grabbing select-none hover:bg-neutral-100',
+                'flex items-center rounded cursor-grab active:cursor-grabbing select-none hover:bg-neutral-100 focus-visible:bg-neutral-100',
                 collapsed ? 'justify-center p-1.5' : 'gap-2 px-2 py-1.5',
               ].join(' ')}
               title={collapsed ? label : undefined}
@@ -88,7 +109,7 @@ export function Palette() {
                 <Icon />
               </span>
               {!collapsed && (
-                <span className="font-caveat text-base text-neutral-800 truncate">
+                <span className="font-caveat text-base text-neutral-800 whitespace-nowrap pr-2">
                   {label}
                 </span>
               )}

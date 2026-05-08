@@ -185,8 +185,10 @@ export function ChaosTimeline() {
 
       <div className="flex-1 overflow-auto px-3 py-2">
         {plan.length === 0 ? (
-          <div className="text-[11px] text-neutral-400 text-center py-4">
-            No chaos scheduled. Use a button above.
+          <div className="text-[11px] text-neutral-400 text-center py-4 leading-relaxed">
+            No chaos events scheduled.
+            <br />
+            Click a button above to add one.
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -195,6 +197,7 @@ export function ChaosTimeline() {
                 key={p.id}
                 spec={p}
                 nodes={design.nodes}
+                durationMs={durationMs}
                 editing={editingId === p.id}
                 onClick={() => setEditingId(editingId === p.id ? null : p.id)}
                 onChange={(patch) => update(p.id, patch)}
@@ -384,6 +387,7 @@ function colorForKind(kind: ChaosEventSpec['kind']): string {
 function ChaosRow({
   spec,
   nodes,
+  durationMs,
   editing,
   onClick,
   onChange,
@@ -391,6 +395,7 @@ function ChaosRow({
 }: {
   spec: ChaosEventSpec
   nodes: Node[]
+  durationMs: number
   editing: boolean
   onClick: () => void
   onChange: (patch: Partial<ChaosEventSpec>) => void
@@ -416,11 +421,19 @@ function ChaosRow({
       </button>
       {editing && (
         <div className="px-2 pt-1 pb-2 border-t border-neutral-100 space-y-1.5">
-          <NumPair label="at (ms)" value={spec.at_ms} onChange={(v) => onChange({ at_ms: v })} />
+          <NumPair
+            label="at (ms)"
+            value={spec.at_ms}
+            onChange={(v) => onChange({ at_ms: v })}
+            min={0}
+            max={Math.max(0, durationMs - 1)}
+          />
           <NumPair
             label="duration (ms)"
             value={spec.duration_ms}
             onChange={(v) => onChange({ duration_ms: v })}
+            min={1}
+            max={Math.max(1, durationMs - spec.at_ms)}
           />
           {(spec.kind === 'node_crash' ||
             spec.kind === 'cache_miss_storm' ||
@@ -505,6 +518,8 @@ function ChaosRow({
               label="multiplier"
               value={spec.multiplier}
               onChange={(v) => onChange({ multiplier: v })}
+              min={1}
+              max={100}
             />
           )}
           {spec.kind === 'network_partition' && (
@@ -551,10 +566,14 @@ function NumPair({
   label,
   value,
   onChange,
+  min,
+  max,
 }: {
   label: string
   value: number
   onChange: (v: number) => void
+  min?: number
+  max?: number
 }) {
   return (
     <label className="flex items-center gap-1.5 text-[11px] text-neutral-700">
@@ -562,9 +581,16 @@ function NumPair({
       <input
         type="number"
         value={value}
+        {...(min !== undefined ? { min } : {})}
+        {...(max !== undefined ? { max } : {})}
+        onFocus={(e) => e.currentTarget.select()}
         onChange={(e) => {
           const n = parseFloat(e.target.value)
-          if (Number.isFinite(n)) onChange(n)
+          if (!Number.isFinite(n)) return
+          let clamped = n
+          if (min !== undefined && clamped < min) clamped = min
+          if (max !== undefined && clamped > max) clamped = max
+          onChange(clamped)
         }}
         className="flex-1 min-w-0 border border-neutral-300 rounded px-1.5 py-0.5 text-[11px] font-mono"
       />

@@ -3,3 +3,14 @@
 @theme {
   --font-caveat: "Caveat", "Comic Sans MS", cursive;
 }
+
+/* High-contrast keyboard focus ring. The browser default of `outline: auto`
+ * resolves to white on the cream landing-page surface — invisible. We force
+ * a blue ring on every focus-visible element so keyboard users can see
+ * where they are. WCAG 2.4.7. Mouse clicks still suppress the ring via
+ * :focus-visible (only fires for keyboard / programmatic focus). */
+:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
