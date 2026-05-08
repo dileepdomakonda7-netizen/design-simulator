@@ -8,7 +8,7 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { DesignCanvas } from '@/canvas/DesignCanvas'
 import { SimDebugPage } from '@/sim/debugPage/SimDebugPage'
 import { SimulateMode, type DemoModeOptions } from '@/sim-ui/SimulateMode'
-import { DEMOS, type DemoBundle } from '@/demos/circuitBreakerPartialFailure'
+import { getScenario, type DemoScenario } from '@/demos'
 import { decodeDesignFromUrl } from '@/persistence/urlShare'
 
 // ─── Placeholder views (build replaced by DesignCanvas) ───────────────────────
@@ -47,14 +47,15 @@ export default function App() {
   const debug = params.get('debug')
   const useDebugSim = debug === 'sim'
 
-  const demoBundle: DemoBundle | undefined = demoName ? DEMOS[demoName] : undefined
+  const scenario: DemoScenario | undefined = demoName ? getScenario(demoName) : undefined
   const [shareError, setShareError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (demoBundle) {
-      // Demo: load hardcoded design + switch to simulate. localStorage
-      // untouched. The demo banner is rendered inside SimulateMode.
-      useDesignStore.getState().loadDesign(demoBundle.design)
+    if (scenario) {
+      // Demo: load the scenario's pre-configured design (chaos plan baked
+      // in) + switch to simulate. localStorage is untouched. The demo
+      // banner is rendered inside SimulateMode.
+      useDesignStore.getState().loadDesign(scenario.buildDesign())
       setMode('simulate')
       return
     }
@@ -93,24 +94,27 @@ export default function App() {
     if (latest === undefined) return
     const design = loadDesignById(latest.id)
     if (design) useDesignStore.getState().loadDesign(design)
-  }, [demoBundle, sharedEncoded, setMode])
+  }, [scenario, sharedEncoded, setMode])
 
   const demoOptions = useMemo<DemoModeOptions>(() => {
-    if (!demoBundle) return {}
+    if (!scenario) return {}
+    const design = scenario.buildDesign()
     return {
       autoStart: autoplay,
       loop: autoplay,
       embed,
-      label: demoBundle.label,
-      blurb: demoBundle.blurb,
+      label: scenario.bannerHeadline,
+      blurb: scenario.bannerBody,
+      ...(scenario.bannerFollowup ? { blurbFollowup: scenario.bannerFollowup } : {}),
       runConfig: {
-        seed: demoBundle.runConfig.seed,
-        durationMs: demoBundle.runConfig.durationMs,
-        rps: 10,
+        seed: scenario.defaultSimConfig.seed,
+        durationMs: scenario.defaultSimConfig.durationMs,
+        rps: scenario.defaultSimConfig.rps,
         speed: 1,
       },
+      trafficOverride: scenario.buildTraffic(design),
     }
-  }, [demoBundle, autoplay, embed])
+  }, [scenario, autoplay, embed])
 
   if (shareError) {
     return (

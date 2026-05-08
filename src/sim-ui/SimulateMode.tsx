@@ -41,21 +41,28 @@ export interface DemoModeOptions {
   loop?: boolean
   /** Single-line lesson blurb shown in a dismissible banner above the controls. */
   blurb?: string
+  /** Optional italic "try this next" follow-up rendered below the blurb. */
+  blurbFollowup?: string
   /** Display label for the banner header. */
   label?: string
   /** Override seed/duration/rps for the auto-run. Used by demo scenarios. */
   runConfig?: { seed?: number; durationMs?: number; rps?: number; speed?: number }
   /** Hide the ControlPanel (autoStart + loop drive everything; user input is off). */
   embed?: boolean
+  /** Replace the auto-generated single-source traffic with a scenario-defined
+   *  list. Required for multi-client / write-ratio scenarios. */
+  trafficOverride?: TrafficSource[]
 }
 
 export function SimulateMode({
   autoStart,
   loop,
   blurb,
+  blurbFollowup,
   label,
   runConfig: demoRun,
   embed,
+  trafficOverride,
 }: DemoModeOptions = {}) {
   const design = useDesignStore((s) => s.design)
   const status = useSimStore((s) => s.status)
@@ -85,16 +92,24 @@ export function SimulateMode({
 
   const buildConfig = useCallback(
     (seed: number, durationMs: number, rps: number): SimRunConfig | null => {
-      const client = design.nodes.find((n) => n.type === 'client')
-      if (!client) return null
-      const traffic: TrafficSource[] = [
-        {
-          id: 'sim-source',
-          label: 'Run',
-          target_node_id: client.id,
-          load_shape: { kind: 'constant', rps },
-        },
-      ]
+      // Demo scenarios provide their own traffic (multi-client, write_ratio,
+      // etc). When absent, fall back to the user-flow default: one source
+      // hitting the first client at `rps`.
+      let traffic: TrafficSource[]
+      if (trafficOverride && trafficOverride.length > 0) {
+        traffic = trafficOverride
+      } else {
+        const client = design.nodes.find((n) => n.type === 'client')
+        if (!client) return null
+        traffic = [
+          {
+            id: 'sim-source',
+            label: 'Run',
+            target_node_id: client.id,
+            load_shape: { kind: 'constant', rps },
+          },
+        ]
+      }
       return {
         design,
         traffic,
@@ -104,7 +119,7 @@ export function SimulateMode({
         snapshotIntervalMs: 100,
       }
     },
-    [design],
+    [design, trafficOverride],
   )
 
   const start = useCallback(
@@ -239,7 +254,14 @@ export function SimulateMode({
       {blurb && !bannerDismissed && (
         <div className="bg-amber-50 border-b border-amber-200 px-3 py-2 flex items-start gap-2 text-xs">
           <span className="font-medium text-amber-900 shrink-0">📚 {label ?? 'Demo'}:</span>
-          <span className="flex-1 text-amber-800">{blurb}</span>
+          <span className="flex-1 text-amber-800">
+            {blurb}
+            {blurbFollowup && (
+              <em className="block mt-1 text-amber-700 not-italic">
+                <span className="italic">{blurbFollowup}</span>
+              </em>
+            )}
+          </span>
           <button
             onClick={() => setBannerDismissed(true)}
             className="text-amber-700 hover:text-amber-900 shrink-0"
