@@ -12,6 +12,7 @@ import { scenario as cacheStampede } from './cacheStampede'
 import { scenario as retryStorm } from './retryStorm'
 import { scenario as readAfterWriteSurprise } from './readAfterWriteSurprise'
 import { scenario as networkPartition } from './networkPartition'
+import { scenario as saturatingFanOut } from './saturatingFanOut'
 
 export const DEMO_SCENARIOS: readonly DemoScenario[] = [
   circuitBreakerPartialFailure,
@@ -19,6 +20,7 @@ export const DEMO_SCENARIOS: readonly DemoScenario[] = [
   retryStorm,
   readAfterWriteSurprise,
   networkPartition,
+  saturatingFanOut,
 ]
 
 const SCENARIOS_BY_SLUG = new Map(DEMO_SCENARIOS.map((s) => [s.slug, s]))
