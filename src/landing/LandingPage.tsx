@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { DEMO_SCENARIOS } from '@/demos'
 
 /**
  * Public landing page at /. Built voice, no marketing fluff.
  *
  * Hero: tagline + embedded looping demo iframe pointing at the canonical
- * circuit-breaker scenario via `/app?demo=cb-partial&autoplay=1&embed=1`.
+ * circuit-breaker scenario via `/app?demo=circuit-breaker-partial-failure&autoplay=1&embed=1`.
  *
  * The iframe approach is deliberate: the canvas app already knows how to
  * mount itself, react to URL params, and run a worker. Iframing it for the
@@ -13,7 +14,7 @@ import { Link } from 'react-router-dom'
  *
  * Mobile fallback: on viewports ≤768px the desktop simulator is illegible
  * (panels squish, banner wraps to 7 lines). Swap the iframe for a static
- * tappable screenshot pointing to /app?demo=cb-partial. Senior engineers
+ * tappable screenshot pointing to /app?demo=circuit-breaker-partial-failure. Senior engineers
  * visit on desktop; mobile is "tap to open the simulator on this device"
  * not "render the simulator inline at miniature size."
  */
@@ -47,7 +48,7 @@ export function LandingPage() {
           I built sysdraw to learn how backpressure, circuit breakers, and consistency
           models actually behave under chaos.{' '}
           <Link
-            to="/app?demo=cb-partial"
+            to="/app?demo=circuit-breaker-partial-failure"
             className="text-blue-700 underline underline-offset-2 hover:text-blue-900"
           >
             Try the demo →
@@ -57,7 +58,7 @@ export function LandingPage() {
         {isMobile ? (
           <div className="mt-8">
             <Link
-              to="/app?demo=cb-partial"
+              to="/app?demo=circuit-breaker-partial-failure"
               className="block rounded-lg border border-neutral-300 overflow-hidden bg-white shadow-sm cursor-pointer hover:border-neutral-500 transition-colors"
               aria-label="Open the sysdraw demo on this device"
             >
@@ -74,7 +75,7 @@ export function LandingPage() {
         ) : (
           <div className="mt-8 md:mt-12 rounded-lg border border-neutral-300 overflow-hidden bg-white shadow-sm aspect-video">
             <iframe
-              src="/app?demo=cb-partial&autoplay=1&embed=1"
+              src="/app?demo=circuit-breaker-partial-failure&autoplay=1&embed=1"
               className="w-full h-full block"
               title="sysdraw demo: circuit breaker + partial failure"
               // The simulator runs entirely client-side in a Web Worker —
@@ -106,40 +107,19 @@ export function LandingPage() {
         <h2 className="font-caveat text-3xl md:text-4xl text-neutral-900 mb-6">
           What you can simulate
         </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <ConceptCard
-            title="Backpressure"
-            blurb="Bounded queues with rejection policies. Watch fast failures free upstream services to make decisions."
-            href="/app?demo=cb-partial"
-            comingSoon={false}
-          />
-          <ConceptCard
-            title="Circuit breakers"
-            blurb="Three-state machine (closed/open/half-open) on every edge. See latency drop while errors climb."
-            href="/app?demo=cb-partial"
-            comingSoon={false}
-          />
-          <ConceptCard
-            title="Partial failures"
-            blurb="Slow nodes, error spikes, and combinations. Compare tight timeouts vs loose timeouts on a degraded service."
-            href="/app?demo=cb-partial"
-            comingSoon={false}
-          />
-          <ConceptCard
-            title="Replication lag"
-            blurb="Async replicas with per-read staleness. Trigger lag spikes and watch reads return stale data."
-            comingSoon
-          />
-          <ConceptCard
-            title="Consistency models"
-            blurb="Linearizable, read-your-writes, monotonic reads, eventual. See the tradeoff between read scale and correctness."
-            comingSoon
-          />
-          <ConceptCard
-            title="Causal-chain inspector"
-            blurb="Click any event in the simulation log and trace its complete causal history back to the originating client request."
-            comingSoon
-          />
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+          {DEMO_SCENARIOS.map((s) => {
+            const comingSoon = !!s.comingSoon
+            return (
+              <ConceptCard
+                key={s.slug}
+                title={s.cardLabel}
+                blurb={s.cardBlurb}
+                comingSoon={comingSoon}
+                {...(comingSoon ? {} : { href: `/app?demo=${s.slug}` })}
+              />
+            )
+          })}
         </div>
       </section>
 

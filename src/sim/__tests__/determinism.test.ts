@@ -1155,3 +1155,49 @@ describe('phase 6e consistency models', () => {
     expect(violations.length).toBe(0)
   })
 })
+
+/**
+ * Launch acceptance: every shippable demo scenario in src/demos/ produces a
+ * deterministic event stream at seed=42. Two runs ⇒ identical digest. Skips
+ * scenarios marked `comingSoon` (registered but not loadable in v1).
+ *
+ * This guards the landing-page concept grid: a card that loads a non-
+ * deterministic design would silently break the seed=42 reproducibility
+ * promise the rest of the engine commits to.
+ */
+import { DEMO_SCENARIOS } from '@/demos'
+
+describe('demo scenarios determinism', () => {
+  for (const s of DEMO_SCENARIOS) {
+    if (s.comingSoon) continue
+    it(`${s.slug}: two seed=42 runs produce identical digests`, async () => {
+      const runOnce = async (): Promise<SimEvent[]> => {
+        const events: SimEvent[] = []
+        const design = s.buildDesign()
+        const traffic = s.buildTraffic(design)
+        const config: SimRunConfig = {
+          design,
+          traffic,
+          chaos: design.chaosPlan ?? [],
+          durationMs: s.defaultSimConfig.durationMs,
+          seed: s.defaultSimConfig.seed,
+          snapshotIntervalMs: 250,
+        }
+        const engine = new SimulationEngine(
+          config,
+          () => {},
+          (e) => events.push(e),
+        )
+        await engine.run()
+        return events
+      }
+      const a = await runOnce()
+      const b = await runOnce()
+      expect(a.length).toBe(b.length)
+      expect(a).toEqual(b)
+      expect(computeDigest(a)).toBe(computeDigest(b))
+      // Sanity: scenarios should generate work, not zero events.
+      expect(a.length).toBeGreaterThan(0)
+    })
+  }
+})

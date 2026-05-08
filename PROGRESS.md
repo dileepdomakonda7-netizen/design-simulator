@@ -1,5 +1,72 @@
 # Progress
 
+## v1 launch — curated demo scenarios (May 8, 2026)
+
+The 6-card concept grid on the landing page is now driven by a registry of pre-configured Design + chaos plan + traffic scenarios, not hand-rolled placeholders. Seven mandatory scenarios shipped + Path B for hot-shard. Sync-replication-trap is registered as `comingSoon` because the v1 engine does not model sync replication blocking.
+
+### Code state
+
+`npm test` → 24/24 (16 prior + 8 new scenario determinism tests). `npm run typecheck` / `lint` / `build` clean.
+
+### Scenarios shipped
+
+Registered in `src/demos/index.ts` in landing-page card order:
+
+| # | Slug | Status | Notes |
+|---|------|--------|-------|
+| 1 | `circuit-breaker-partial-failure` | ✅ shipped | Retrofitted from the existing `cb-partial` bundle into the new `DemoScenario` shape. |
+| 2 | `cache-stampede` | ✅ shipped | client → cache (90% hit) → db (read_queue=50). Cache miss storm at 2000–4000ms saturates the database read queue. |
+| 3 | `retry-storm` | ✅ shipped | client → app → external_service (fail=0.6). Edge has exponential_backoff retry, no circuit breaker. |
+| 4 | `read-after-write-surprise` | ✅ shipped | Single client, db replicas=3 async, consistency_model=eventual, write_ratio=0.4. Banner has italic follow-up suggesting read_your_writes. |
+| 5 | `network-partition` | ✅ shipped | Client → LB → 3× app_server → db. Partition isolates app #3 from the LB at 2000–3500ms. |
+| 6 | `saturating-fan-out` | ✅ shipped (approximation) | App_server cannot fan out in parallel — used a load_balancer round-robin to 3 external services with one degraded 10×. Banner labelled "(approximation)". |
+| 7 | `thundering-herd` | ✅ shipped | 10 client nodes (rps=10 each) → LB → external_service (rate_limit=80). 5× traffic_spike at 2000–3000ms. |
+| 8 | `sync-replication-trap` | ⏸ `comingSoon` | Engine v1 does not model sync semantics (`replication_mode` is stored but not honored — writes never block on replica acknowledgment). Banner copy from the launch spec would be misleading; deferred until sync semantics land. |
+| 9 | `hot-shard` | ✅ shipped (Path B) | No first-class sharding primitive in the engine and no weighted LB algorithm. Approximated with 3 independent client→database pairs at 80/10/10 rps. Banner labelled "(approximation)". |
+
+### Loader / banner / landing changes
+
+- New `src/demos/types.ts` defines `DemoScenario`. New `src/demos/index.ts` exports the registry + `getScenario(slug)` (rejects `comingSoon` slugs).
+- `App.tsx` swapped from `DEMOS[name]` lookup to `getScenario(slug)`. The scenario's design (with chaos plan baked in) is loaded into the design store; `trafficOverride` flows through `DemoModeOptions` so multi-client and write-ratio scenarios run their own traffic instead of the auto-generated single-source default.
+- `SimulateMode.tsx` accepts `blurbFollowup` and `trafficOverride`. Banner renders the optional italic follow-up below the body. `buildConfig` uses `trafficOverride` when present.
+- `LandingPage.tsx` renders one card per registered scenario via `DEMO_SCENARIOS.map(...)`. `comingSoon` scenarios show the badge and are non-clickable; live ones link to `/app?demo=<slug>`. The hero iframe + mobile fallback link both updated to the new slug `circuit-breaker-partial-failure`.
+
+### Determinism
+
+- New `describe('demo scenarios determinism', ...)` in `determinism.test.ts` iterates `DEMO_SCENARIOS`, skips `comingSoon`, and asserts two seed=42 runs produce identical event arrays + identical digests + non-zero event counts. Eight test cases (one per shippable scenario) currently pass.
+
+### Engine limitations surfaced (documented, not fixed for this prompt)
+
+1. **App_server fan-out.** `defaultNextHop()` selects a single outgoing sync_rpc edge per request — no parallel fan-out. Saturating-fan-out scenario uses a load_balancer round-robin instead. This means the demo shows "1/3 of requests hit the slow shard, p99 still tracks it" rather than the strict "max(N parallel)" tail-at-scale formulation. Banner adjusted accordingly.
+2. **Sync replication.** `replication_mode: 'sync'` is stored on database params but the database behavior never blocks a write on replica acknowledgment. Sync-replication-trap deferred.
+3. **Horizontal sharding.** No shard_router primitive; LB algorithms (round_robin / least_connections / random / consistent_hash) cannot model weighted skew. Hot-shard uses three independent client→shard pairs.
+
+### Acceptance status
+
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | All 7 mandatory scenarios load at `/app?demo=<slug>` | ✅ (sync-replication-trap deferred per spec) |
+| 2 | Each scenario produces the lesson described in its banner | ✅ verified by determinism test + manual scoping; engine semantics for chaos types match scenario design |
+| 3 | Scenario 8 (hot-shard) shipped via Path A/B/C | ✅ Path B (approximation) |
+| 4 | Landing page shows all scenarios as cards | ✅ |
+| 5 | 17th determinism test (looped) passes | ✅ broadened to one test per scenario; 8 tests pass |
+| 6 | No regression on existing cb-partial scenario | ✅ existing tests still pass; cb-partial loads at new slug |
+| 7 | typecheck / lint / build pass | ✅ |
+| 8 | Deploy + click-through every card on production | ⏳ pending push |
+
+### Commits
+
+- `prompt-scenario-loader-registry` — types, registry, cb-partial retrofit, App.tsx + SimulateMode wiring
+- `prompt-scenario-cache-stampede`
+- `prompt-scenario-retry-storm`
+- `prompt-scenario-read-after-write-surprise`
+- `prompt-scenario-network-partition`
+- `prompt-scenario-saturating-fan-out`
+- `prompt-scenario-thundering-herd`
+- `prompt-scenario-sync-replication-trap` (registered as comingSoon)
+- `prompt-scenario-hot-shard`
+- `prompt-scenario-landing-cards` — landing grid driven by registry + 17th determinism test
+
 ## v1 launch — sysdraw.vercel.app (in progress)
 
 The project is renamed from "Design Simulator" to **sysdraw**. v1 ships a public landing page, a canonical demo scenario, URL-sharable designs, and Vercel deployment configuration.
