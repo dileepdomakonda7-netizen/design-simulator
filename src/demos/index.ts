@@ -9,10 +9,12 @@
 import type { DemoScenario } from './types'
 import { scenario as circuitBreakerPartialFailure } from './circuitBreakerPartialFailure'
 import { scenario as cacheStampede } from './cacheStampede'
+import { scenario as retryStorm } from './retryStorm'
 
 export const DEMO_SCENARIOS: readonly DemoScenario[] = [
   circuitBreakerPartialFailure,
   cacheStampede,
+  retryStorm,
 ]
 
 const SCENARIOS_BY_SLUG = new Map(DEMO_SCENARIOS.map((s) => [s.slug, s]))
