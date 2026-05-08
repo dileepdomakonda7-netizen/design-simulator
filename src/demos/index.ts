@@ -11,12 +11,14 @@ import { scenario as circuitBreakerPartialFailure } from './circuitBreakerPartia
 import { scenario as cacheStampede } from './cacheStampede'
 import { scenario as retryStorm } from './retryStorm'
 import { scenario as readAfterWriteSurprise } from './readAfterWriteSurprise'
+import { scenario as networkPartition } from './networkPartition'
 
 export const DEMO_SCENARIOS: readonly DemoScenario[] = [
   circuitBreakerPartialFailure,
   cacheStampede,
   retryStorm,
   readAfterWriteSurprise,
+  networkPartition,
 ]
 
 const SCENARIOS_BY_SLUG = new Map(DEMO_SCENARIOS.map((s) => [s.slug, s]))
