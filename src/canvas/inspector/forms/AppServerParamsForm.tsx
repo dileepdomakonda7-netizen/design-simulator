@@ -1,6 +1,7 @@
 import type { Node } from '@/schema/types'
 import { useDesignStore } from '@/store/designStore'
 import { NumberField } from '../fields/NumberField'
+import { LatencyPair } from '../fields/LatencyPair'
 import { SliderField } from '../fields/SliderField'
 import { SelectField } from '../fields/SelectField'
 
@@ -23,6 +24,7 @@ export function AppServerParamsForm({ node }: Props) {
         value={node.params.instances}
         onChange={(v) => update(node.id, 'app_server', { instances: Math.round(v) })}
         min={1}
+        max={1000}
         step={1}
       />
       <NumberField
@@ -32,22 +34,16 @@ export function AppServerParamsForm({ node }: Props) {
           update(node.id, 'app_server', { max_concurrent_per_instance: Math.round(v) })
         }
         min={1}
+        max={100000}
         step={1}
         hint="Per instance"
       />
-      <NumberField
-        label="Latency p50"
-        value={node.params.latency_ms_p50}
-        onChange={(v) => update(node.id, 'app_server', { latency_ms_p50: v })}
-        min={0}
-        suffix="ms"
-      />
-      <NumberField
-        label="Latency p99"
-        value={node.params.latency_ms_p99}
-        onChange={(v) => update(node.id, 'app_server', { latency_ms_p99: v })}
-        min={0}
-        suffix="ms"
+      <LatencyPair
+        p50={node.params.latency_ms_p50}
+        p99={node.params.latency_ms_p99}
+        onChange={({ p50, p99 }) =>
+          update(node.id, 'app_server', { latency_ms_p50: p50, latency_ms_p99: p99 })
+        }
       />
       <SliderField
         label="Failure rate"
@@ -64,6 +60,7 @@ export function AppServerParamsForm({ node }: Props) {
           update(node.id, 'app_server', { queue_max_depth: Math.max(0, Math.round(v)) })
         }
         min={0}
+        max={1000000}
         step={1}
         hint="0 = unbounded (Phase 4 default)"
       />

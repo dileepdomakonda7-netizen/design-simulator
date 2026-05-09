@@ -1201,3 +1201,115 @@ describe('demo scenarios determinism', () => {
     })
   }
 })
+
+/**
+ * Round-3 R3-1 regression. Two consecutive `start` calls on the SAME
+ * worker-api instance must produce identical event streams. The bug we're
+ * guarding against: Comlink doesn't serialize incoming method invocations,
+ * so a follow-up `start` was firing while the previous engine was still
+ * draining — the previous run's tail events leaked into the new run's
+ * event ref and the digest changed run-to-run.
+ *
+ * The fix is a single-slot promise queue inside `createWorkerApi`. The
+ * test uses the api factory directly (no real Web Worker / Comlink) so
+ * the contract is testable in node.
+ */
+import { createWorkerApi } from '../workerApi'
+
+describe('workerApi run serialization (R3-1)', () => {
+  it('two sequential start calls on the same api produce identical digests', async () => {
+    const api = createWorkerApi()
+    const scenario = DEMO_SCENARIOS.find((s) => s.slug === 'thundering-herd')!
+    const runOnce = async (): Promise<SimEvent[]> => {
+      const events: SimEvent[] = []
+      const design = scenario.buildDesign()
+      const traffic = scenario.buildTraffic(design)
+      const config: SimRunConfig = {
+        design,
+        traffic,
+        chaos: design.chaosPlan ?? [],
+        durationMs: scenario.defaultSimConfig.durationMs,
+        seed: 42,
+        snapshotIntervalMs: 250,
+      }
+      let resolveComplete: () => void
+      const complete = new Promise<void>((r) => {
+        resolveComplete = r
+      })
+      // start awaits engine.run + onComplete; the test additionally
+      // awaits the complete promise to defend against any future
+      // refactor that decouples them.
+      await api.start(
+        config,
+        () => {},
+        (e) => events.push(e),
+        () => resolveComplete(),
+      )
+      await complete
+      return events
+    }
+
+    const a = await runOnce()
+    const b = await runOnce()
+    expect(a.length).toBe(b.length)
+    expect(computeDigest(a)).toBe(computeDigest(b))
+  })
+
+  it('cancel-then-start does not leak prior-run events into the next run', async () => {
+    const api = createWorkerApi()
+    const scenario = DEMO_SCENARIOS.find((s) => s.slug === 'cache-stampede')!
+    const buildConfig = (): SimRunConfig => {
+      const design = scenario.buildDesign()
+      const traffic = scenario.buildTraffic(design)
+      return {
+        design,
+        traffic,
+        chaos: design.chaosPlan ?? [],
+        durationMs: scenario.defaultSimConfig.durationMs,
+        seed: 42,
+        snapshotIntervalMs: 250,
+      }
+    }
+
+    // First run: kick off but cancel mid-flight (don't await start).
+    const eventsA: SimEvent[] = []
+    const startA = api.start(
+      buildConfig(),
+      () => {},
+      (e) => eventsA.push(e),
+      () => {},
+    )
+    // Allow a few microtasks for the engine to spin up before cancelling.
+    await Promise.resolve()
+    await api.cancel()
+    await startA
+    const aLen = eventsA.length
+    // Push to make sure no further events arrive on `eventsA` after the
+    // queue has resolved. Read length again after a follow-up run.
+
+    // Second run: full duration. Capture only its events.
+    const eventsB: SimEvent[] = []
+    await api.start(
+      buildConfig(),
+      () => {},
+      (e) => eventsB.push(e),
+      () => {},
+    )
+
+    // Reference run from a fresh api: same scenario, no prior cancel.
+    const apiRef = createWorkerApi()
+    const eventsRef: SimEvent[] = []
+    await apiRef.start(
+      buildConfig(),
+      () => {},
+      (e) => eventsRef.push(e),
+      () => {},
+    )
+
+    // The post-cancel run must look identical to a fresh-api run.
+    expect(eventsB.length).toBe(eventsRef.length)
+    expect(computeDigest(eventsB)).toBe(computeDigest(eventsRef))
+    // And no events arrived on eventsA after the cancel observed completion.
+    expect(eventsA.length).toBe(aLen)
+  })
+})

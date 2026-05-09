@@ -1,6 +1,7 @@
 import type { Node } from '@/schema/types'
 import { useDesignStore } from '@/store/designStore'
 import { NumberField } from '../fields/NumberField'
+import { LatencyPair } from '../fields/LatencyPair'
 import { SelectField } from '../fields/SelectField'
 import { SliderField } from '../fields/SliderField'
 
@@ -50,6 +51,7 @@ export function DatabaseParamsForm({ node }: Props) {
         value={node.params.replicas}
         onChange={(v) => update(node.id, 'database', { replicas: Math.round(v) })}
         min={1}
+        max={100}
         step={1}
       />
       <NumberField
@@ -57,6 +59,7 @@ export function DatabaseParamsForm({ node }: Props) {
         value={node.params.read_capacity_rps}
         onChange={(v) => update(node.id, 'database', { read_capacity_rps: v })}
         min={0}
+        max={1_000_000}
         suffix="rps"
       />
       <NumberField
@@ -64,6 +67,7 @@ export function DatabaseParamsForm({ node }: Props) {
         value={node.params.write_capacity_rps}
         onChange={(v) => update(node.id, 'database', { write_capacity_rps: v })}
         min={0}
+        max={1_000_000}
         suffix="rps"
       />
       <SelectField
@@ -94,50 +98,60 @@ export function DatabaseParamsForm({ node }: Props) {
           hint="Overrides read routing. linearizable=primary; eventual=any replica; RYW/MR escalate to primary when a replica is too stale."
         />
       )}
-      <NumberField
-        label="Repl. lag p50"
-        value={node.params.replication_lag_ms_p50}
-        onChange={(v) => update(node.id, 'database', { replication_lag_ms_p50: v })}
-        min={0}
-        suffix="ms"
-        disabled={!replicationActive}
-        hint="Only meaningful with async replication AND replicas > 1"
+      {/* Replication lag pair — disabled when not applicable, but keep the
+          pair logically grouped so p99 ≥ p50 still holds when the user
+          flips replication mode back on. */}
+      {replicationActive ? (
+        <LatencyPair
+          p50Label="Repl. lag p50"
+          p99Label="Repl. lag p99"
+          p50={node.params.replication_lag_ms_p50}
+          p99={node.params.replication_lag_ms_p99}
+          onChange={({ p50, p99 }) =>
+            update(node.id, 'database', {
+              replication_lag_ms_p50: p50,
+              replication_lag_ms_p99: p99,
+            })
+          }
+        />
+      ) : (
+        <>
+          <NumberField
+            label="Repl. lag p50"
+            value={node.params.replication_lag_ms_p50}
+            onChange={() => undefined}
+            min={0}
+            suffix="ms"
+            disabled
+            hint="Only meaningful with async replication AND replicas > 1"
+          />
+          <NumberField
+            label="Repl. lag p99"
+            value={node.params.replication_lag_ms_p99}
+            onChange={() => undefined}
+            min={0}
+            suffix="ms"
+            disabled
+          />
+        </>
+      )}
+      <LatencyPair
+        p50Label="Read latency p50"
+        p99Label="Read latency p99"
+        p50={node.params.read_latency_ms_p50}
+        p99={node.params.read_latency_ms_p99}
+        onChange={({ p50, p99 }) =>
+          update(node.id, 'database', { read_latency_ms_p50: p50, read_latency_ms_p99: p99 })
+        }
       />
-      <NumberField
-        label="Repl. lag p99"
-        value={node.params.replication_lag_ms_p99}
-        onChange={(v) => update(node.id, 'database', { replication_lag_ms_p99: v })}
-        min={0}
-        suffix="ms"
-        disabled={!replicationActive}
-      />
-      <NumberField
-        label="Read latency p50"
-        value={node.params.read_latency_ms_p50}
-        onChange={(v) => update(node.id, 'database', { read_latency_ms_p50: v })}
-        min={0}
-        suffix="ms"
-      />
-      <NumberField
-        label="Read latency p99"
-        value={node.params.read_latency_ms_p99}
-        onChange={(v) => update(node.id, 'database', { read_latency_ms_p99: v })}
-        min={0}
-        suffix="ms"
-      />
-      <NumberField
-        label="Write latency p50"
-        value={node.params.write_latency_ms_p50}
-        onChange={(v) => update(node.id, 'database', { write_latency_ms_p50: v })}
-        min={0}
-        suffix="ms"
-      />
-      <NumberField
-        label="Write latency p99"
-        value={node.params.write_latency_ms_p99}
-        onChange={(v) => update(node.id, 'database', { write_latency_ms_p99: v })}
-        min={0}
-        suffix="ms"
+      <LatencyPair
+        p50Label="Write latency p50"
+        p99Label="Write latency p99"
+        p50={node.params.write_latency_ms_p50}
+        p99={node.params.write_latency_ms_p99}
+        onChange={({ p50, p99 }) =>
+          update(node.id, 'database', { write_latency_ms_p50: p50, write_latency_ms_p99: p99 })
+        }
       />
       <SliderField
         label="Failure rate"
@@ -152,6 +166,7 @@ export function DatabaseParamsForm({ node }: Props) {
           update(node.id, 'database', { read_queue_max_depth: Math.max(0, Math.round(v)) })
         }
         min={0}
+        max={1_000_000}
         step={1}
         hint="0 = unbounded — over-cap arrivals reject immediately (Phase 4 default)"
       />

@@ -1,6 +1,7 @@
 import type { Edge } from '@/schema/types'
 import { useDesignStore } from '@/store/designStore'
 import { NumberField } from '../fields/NumberField'
+import { LatencyPair, MAX_LATENCY_MS } from '../fields/LatencyPair'
 import { SelectField } from '../fields/SelectField'
 import { TextField } from '../fields/TextField'
 import { CheckboxField } from '../fields/CheckboxField'
@@ -40,25 +41,22 @@ export function EdgeForm({ edge }: Props) {
       </Section>
 
       <Section title="Network">
-        <NumberField
-          label="Latency p50"
-          value={edge.params.network_latency_ms_p50}
-          onChange={(v) => updateEdgeParams(edge.id, { network_latency_ms_p50: v })}
-          min={0}
-          suffix="ms"
-        />
-        <NumberField
-          label="Latency p99"
-          value={edge.params.network_latency_ms_p99}
-          onChange={(v) => updateEdgeParams(edge.id, { network_latency_ms_p99: v })}
-          min={0}
-          suffix="ms"
+        <LatencyPair
+          p50={edge.params.network_latency_ms_p50}
+          p99={edge.params.network_latency_ms_p99}
+          onChange={({ p50, p99 }) =>
+            updateEdgeParams(edge.id, {
+              network_latency_ms_p50: p50,
+              network_latency_ms_p99: p99,
+            })
+          }
         />
         <NumberField
           label="Timeout"
           value={edge.params.timeout_ms}
           onChange={(v) => updateEdgeParams(edge.id, { timeout_ms: v })}
           min={0}
+          max={MAX_LATENCY_MS}
           suffix="ms"
         />
       </Section>

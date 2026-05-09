@@ -1,6 +1,7 @@
 import type { Node } from '@/schema/types'
 import { useDesignStore } from '@/store/designStore'
 import { NumberField } from '../fields/NumberField'
+import { LatencyPair } from '../fields/LatencyPair'
 import { SelectField } from '../fields/SelectField'
 import { SliderField } from '../fields/SliderField'
 
@@ -29,6 +30,7 @@ export function CacheParamsForm({ node }: Props) {
         value={node.params.capacity_items}
         onChange={(v) => update(node.id, 'cache', { capacity_items: Math.round(v) })}
         min={1}
+        max={1_000_000_000}
         step={1}
         suffix="items"
       />
@@ -38,19 +40,14 @@ export function CacheParamsForm({ node }: Props) {
         options={POLICIES}
         onChange={(v) => update(node.id, 'cache', { eviction_policy: v })}
       />
-      <NumberField
-        label="Read latency p50"
-        value={node.params.read_latency_ms_p50}
-        onChange={(v) => update(node.id, 'cache', { read_latency_ms_p50: v })}
-        min={0}
-        suffix="ms"
-      />
-      <NumberField
-        label="Read latency p99"
-        value={node.params.read_latency_ms_p99}
-        onChange={(v) => update(node.id, 'cache', { read_latency_ms_p99: v })}
-        min={0}
-        suffix="ms"
+      <LatencyPair
+        p50Label="Read latency p50"
+        p99Label="Read latency p99"
+        p50={node.params.read_latency_ms_p50}
+        p99={node.params.read_latency_ms_p99}
+        onChange={({ p50, p99 }) =>
+          update(node.id, 'cache', { read_latency_ms_p50: p50, read_latency_ms_p99: p99 })
+        }
       />
       <SliderField
         label="Failure rate"

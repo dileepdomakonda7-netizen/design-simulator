@@ -10,6 +10,7 @@
 import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from 'lz-string'
 import type { Design } from '@/schema/types'
 import { validateDesign } from '@/schema/validators'
+import { expandDesign, minimizeDesign } from './designCodec'
 
 /** Hard cap on the encoded-design URL fragment length. Practical browser /
  *  CDN limits start mattering above ~8KB. */
@@ -30,7 +31,10 @@ export interface EncodeError {
 /** Compress + base64-encode a Design for URL embedding. Returns the encoded
  *  string on success, or an error result on hard size cap. */
 export function encodeDesignForUrl(design: Design): EncodeResult | EncodeError {
-  const json = JSON.stringify(design)
+  // Round-3 R3-10: strip default param values before serialization. The
+  // decode side calls expandDesign before validate so the inner Design
+  // shape on either end is identical.
+  const json = JSON.stringify(minimizeDesign(design))
   const encoded = compressToEncodedURIComponent(json)
   if (encoded.length > MAX_ENCODED_LENGTH) {
     return {
@@ -70,6 +74,10 @@ export function decodeDesignFromUrl(encoded: string): DecodeOk | DecodeError {
   } catch (e) {
     return { ok: false, reason: 'malformed', detail: String(e) }
   }
+  // Round-3 R3-10: re-fill default params so the validator sees a fully
+  // shaped Design. expandDesign is identity on already-full payloads, so
+  // legacy share URLs encoded with the old serializer keep working.
+  parsed = expandDesign(parsed)
   const result = validateDesign(parsed)
   if (!result.ok) {
     const detail = result.error.issues[0]?.message

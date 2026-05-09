@@ -132,12 +132,22 @@ function DesignCanvasInner() {
 
   // Restore viewport on design change. For demo designs the build-mode
   // palette overlay (~155px on the left) can hide the leftmost node at the
-  // pan position the design was authored with — round-2 R-8. Detect that
-  // case (id starting with `demo-`) and prefer fitView with padding so the
-  // entire graph is visible from any viewport size.
+  // pan position the design was authored with — round-2 R-8 / round-3
+  // R3-7. Two-step fix: fitView so the whole graph is visible at the
+  // current viewport size, then auto-collapse the palette so the
+  // leftmost node isn't covered. Users who want the palette can expand
+  // it via the collapse toggle.
   useEffect(() => {
     if (designId.startsWith('demo-')) {
       reactFlow.fitView({ padding: 0.2 })
+      // Round-3 R3-7: collapse the palette only on the FIRST view of a
+      // given demo. We don't want to fight the user if they explicitly
+      // expanded it — but fresh demo loads should default to "see the
+      // whole graph." Track the "we've collapsed for this design" state
+      // by reading once: if the user already toggled, leave it.
+      if (!useUIStore.getState().paletteCollapsed) {
+        useUIStore.setState({ paletteCollapsed: true })
+      }
     } else {
       reactFlow.setViewport(viewport)
     }
@@ -178,14 +188,47 @@ function DesignCanvasInner() {
     [onEdgesChangeInternal, removeEdge],
   )
 
-  // TODO(prompt-7-or-later): topology validation lives at simulation start.
+  // Round-3 R3-6: validate before adding the edge AND give the user
+  // visible feedback when we reject. Self-loops are nonsensical; cycles
+  // would break the request-routing engine which assumes a DAG of forward
+  // hops. We surface a toast either way so the user knows their drag
+  // didn't silently no-op.
   const onConnect = useCallback(
     (conn: Connection) => {
-      if (conn.source && conn.target) {
-        addEdge(createDefaultEdge(conn.source, conn.target))
+      if (!conn.source || !conn.target) return
+      if (conn.source === conn.target) {
+        useUIStore
+          .getState()
+          .pushToast('warn', "Can't connect a node to itself.")
+        return
       }
+      // Cycle check: BFS forward from conn.target through existing edges; if
+      // we reach conn.source, adding source→target would close a cycle.
+      const adj = new Map<string, string[]>()
+      for (const e of schemaEdges) {
+        const list = adj.get(e.source) ?? []
+        list.push(e.target)
+        adj.set(e.source, list)
+      }
+      const queue: string[] = [conn.target]
+      const seen = new Set<string>([conn.target])
+      while (queue.length > 0) {
+        const cur = queue.shift()!
+        if (cur === conn.source) {
+          useUIStore
+            .getState()
+            .pushToast('warn', "That edge would create a cycle. Cycles aren't supported in v1.")
+          return
+        }
+        for (const next of adj.get(cur) ?? []) {
+          if (seen.has(next)) continue
+          seen.add(next)
+          queue.push(next)
+        }
+      }
+      addEdge(createDefaultEdge(conn.source, conn.target))
     },
-    [addEdge],
+    [addEdge, schemaEdges],
   )
 
   // ─── Palette drop handlers (HTML5 drag-and-drop) ────────────────────────────

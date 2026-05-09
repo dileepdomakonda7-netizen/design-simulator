@@ -1,6 +1,7 @@
 import type { Node } from '@/schema/types'
 import { useDesignStore } from '@/store/designStore'
 import { NumberField } from '../fields/NumberField'
+import { LatencyPair, MAX_LATENCY_MS } from '../fields/LatencyPair'
 import { SliderField } from '../fields/SliderField'
 
 interface Props {
@@ -17,25 +18,21 @@ export function CdnParamsForm({ node }: Props) {
         onChange={(v) => update(node.id, 'cdn', { hit_rate: v })}
         asPercent
       />
-      <NumberField
-        label="Edge latency p50"
-        value={node.params.edge_latency_ms_p50}
-        onChange={(v) => update(node.id, 'cdn', { edge_latency_ms_p50: v })}
-        min={0}
-        suffix="ms"
-      />
-      <NumberField
-        label="Edge latency p99"
-        value={node.params.edge_latency_ms_p99}
-        onChange={(v) => update(node.id, 'cdn', { edge_latency_ms_p99: v })}
-        min={0}
-        suffix="ms"
+      <LatencyPair
+        p50Label="Edge latency p50"
+        p99Label="Edge latency p99"
+        p50={node.params.edge_latency_ms_p50}
+        p99={node.params.edge_latency_ms_p99}
+        onChange={({ p50, p99 }) =>
+          update(node.id, 'cdn', { edge_latency_ms_p50: p50, edge_latency_ms_p99: p99 })
+        }
       />
       <NumberField
         label="Origin pull timeout"
         value={node.params.origin_pull_timeout_ms}
         onChange={(v) => update(node.id, 'cdn', { origin_pull_timeout_ms: v })}
         min={0}
+        max={MAX_LATENCY_MS}
         suffix="ms"
       />
       <SliderField

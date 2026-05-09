@@ -16,6 +16,7 @@ export function ClientParamsForm({ node }: Props) {
         value={node.params.rps}
         onChange={(v) => update(node.id, 'client', { rps: v })}
         min={0}
+        max={100_000}
         step={1}
         suffix="req/s"
       />
@@ -24,6 +25,7 @@ export function ClientParamsForm({ node }: Props) {
         value={node.params.think_time_ms}
         onChange={(v) => update(node.id, 'client', { think_time_ms: v })}
         min={0}
+        max={60_000}
         suffix="ms"
       />
       <NumberField
@@ -31,6 +33,7 @@ export function ClientParamsForm({ node }: Props) {
         value={node.params.timeout_ms}
         onChange={(v) => update(node.id, 'client', { timeout_ms: v })}
         min={0}
+        max={60_000}
         suffix="ms"
       />
       <RetryPolicyEditor

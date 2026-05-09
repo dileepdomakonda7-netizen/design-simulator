@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Toolbar } from '@/components/Toolbar'
+import { ToastHost } from '@/components/ToastHost'
 import { useModeStore } from '@/store/modeStore'
 import { useDesignStore } from '@/store/designStore'
 import { listDesigns, loadDesignById, saveDesign } from '@/persistence/designStorage'
@@ -59,12 +60,18 @@ export default function App() {
   const [shareError, setShareError] = useState<string | null>(null)
   const designName = useDesignStore((s) => s.design.name)
 
+  // Round-3 R3-8: a design loaded via `?d=<encoded>` whose name happens
+  // to be `Demo: Cache stampede` (because that's what the original demo
+  // design exported) shouldn't render as `sysdraw · Demo: Cache stampede`
+  // — that double-stamps the "Demo:" prefix relative to the same design
+  // loaded via `?demo=<slug>`. Strip the leading "Demo: " when present.
+  const displayedName = designName.replace(/^Demo:\s*/u, '')
   useDocumentHead({
     title: scenario
       ? `sysdraw · ${scenario.cardLabel}`
       : demoNotFound
         ? 'sysdraw · Demo not found'
-        : `sysdraw · ${designName}`,
+        : `sysdraw · ${displayedName}`,
     pathAndQuery: scenario ? `/app?demo=${scenario.slug}` : '/app',
     ...(scenario ? { description: scenario.cardBlurb } : {}),
   })
@@ -201,6 +208,7 @@ export default function App() {
         {mode === 'simulate' &&
           (useDebugSim ? <SimDebugPage /> : <SimulateMode {...demoOptions} />)}
       </main>
+      <ToastHost />
     </div>
   )
 }

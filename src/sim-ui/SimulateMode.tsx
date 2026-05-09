@@ -70,6 +70,7 @@ export function SimulateMode({
   const setStatus = useSimStore((s) => s.setStatus)
   const setConfig = useSimStore((s) => s.setConfig)
   const setDigest = useSimStore((s) => s.setDigest)
+  const setVirtualTime = useSimStore((s) => s.setVirtualTime)
   const appendEvents = useSimStore((s) => s.appendEvents)
   const appendSnapshots = useSimStore((s) => s.appendSnapshots)
   const clearStream = useSimStore((s) => s.clearStream)
@@ -188,13 +189,21 @@ export function SimulateMode({
         snapshotBufferRef.current.push(snap)
       }
       const onComplete = () => {
-        // Drain any remaining buffered events / snapshots before computing
-        // the digest so latestSnapshot reflects the final tick.
-        drainBuffers()
+        // Round-3 R3-2 / R3-3: ordering matters. Stop the periodic flush
+        // FIRST so a coincident timer fire doesn't double-flush an empty
+        // buffer between the final drain and the status transition. Then
+        // drain. Then snap the virtual-time indicator to the configured
+        // duration so the playback timer reads `durationMs` cleanly
+        // instead of freezing at the last sub-tick before sim_end. Then
+        // setDigest. Finally setStatus — by this point the store is
+        // fully consistent so the metrics card and the COMPLETED pill
+        // render in the same paint.
         if (flushTimerRef.current !== null) {
           clearInterval(flushTimerRef.current)
           flushTimerRef.current = null
         }
+        drainBuffers()
+        setVirtualTime(cfg.durationMs)
         const d = computeDigest(allEventsRef.current)
         setDigest(d)
         const wasCancelled = useSimStore.getState().status === 'cancelled'
@@ -213,7 +222,7 @@ export function SimulateMode({
         setStatus('idle')
       }
     },
-    [buildConfig, clearStream, drainBuffers, setConfig, setDigest, setStatus],
+    [buildConfig, clearStream, drainBuffers, setConfig, setDigest, setStatus, setVirtualTime],
   )
 
   const pause = useCallback(async () => {
@@ -237,8 +246,9 @@ export function SimulateMode({
     void apiRef.current?.cancel()
     clearStream()
     setConfig(null)
+    setVirtualTime(0)
     setStatus('idle')
-  }, [clearStream, setConfig, setStatus])
+  }, [clearStream, setConfig, setStatus, setVirtualTime])
 
   const setSpeed = useCallback(async (multiplier: number) => {
     await apiRef.current?.setSpeed(multiplier)

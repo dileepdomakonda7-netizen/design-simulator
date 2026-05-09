@@ -56,6 +56,8 @@ export function Inspector() {
 
   return (
     <aside
+      role="complementary"
+      aria-label="Inspector"
       className={[
         'absolute top-0 right-0 bottom-0 z-20 bg-white/95 backdrop-blur border-l border-neutral-200 shadow-sm flex flex-col transition-[width] duration-150',
         collapsed ? 'w-9' : 'w-[320px]',
@@ -76,7 +78,10 @@ export function Inspector() {
         </button>
       </header>
       {!collapsed && (
-        <div className="flex-1 overflow-y-auto">
+        // Round-3 R3-9: aria-region containment so a stray axis label or
+        // canvas tick text from a positioned sibling doesn't bleed into
+        // screen-reader reading order under "Inspector".
+        <div className="flex-1 overflow-y-auto" role="region" aria-label="Inspector content">
           {target === 'node' && nodeId && <NodeInspector nodeId={nodeId} />}
           {target === 'edge' && edgeId && <EdgeInspector edgeId={edgeId} />}
           {target === 'none' && <EmptyState />}

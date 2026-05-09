@@ -16,6 +16,7 @@ export function ApiGatewayParamsForm({ node }: Props) {
         value={node.params.rate_limit_rps}
         onChange={(v) => update(node.id, 'api_gateway', { rate_limit_rps: v })}
         min={0}
+        max={1_000_000}
         suffix="req/s"
         hint="0 = unlimited"
       />
@@ -24,6 +25,7 @@ export function ApiGatewayParamsForm({ node }: Props) {
         value={node.params.auth_overhead_ms}
         onChange={(v) => update(node.id, 'api_gateway', { auth_overhead_ms: v })}
         min={0}
+        max={60_000}
         suffix="ms"
       />
       <NumberField
@@ -31,6 +33,7 @@ export function ApiGatewayParamsForm({ node }: Props) {
         value={node.params.timeout_ms}
         onChange={(v) => update(node.id, 'api_gateway', { timeout_ms: v })}
         min={0}
+        max={60_000}
         suffix="ms"
       />
       <SliderField

@@ -1,5 +1,42 @@
 # Progress
 
+## v1 launch — round 3 bug sweep (May 8, 2026)
+
+Round-3 report (`sysdraw-bug-report-round3.md`) flagged 12 issues, including the headline determinism breakage (R3-1) — same seed produced different digests across runs. All 12 addressed; tests now 35/35 (was 24/24); build clean.
+
+### Headline P0 fixes
+
+- **R3-1: determinism is now stable across runs.** Root cause was that Comlink doesn't serialize incoming method invocations: when main fired `cancel()` followed by `start(...)`, the worker handled them concurrently while the previous engine was still draining its event queue. The previous run's tail events leaked into the new run's `allEventsRef` (which we cleared at the start of every new run, but had no defense against late deliveries from the prior run). Fix: extracted the worker orchestration into `src/sim/workerApi.ts` so it's testable in node, and added a single-slot promise queue:
+  - `start` awaits the prior run's promise before creating a new engine.
+  - `cancel` flips the engine flag *and* awaits the queue, so callers can rely on a fully-drained worker after `await api.cancel()` resolves.
+  - Two new regression tests in `src/sim/__tests__/determinism.test.ts` exercise the contract directly: two sequential starts at seed 42 produce identical digests, and a cancel-mid-flight followed by a fresh start produces a digest identical to a fresh-api run.
+- **R3-2 / R3-3: clean COMPLETED transition.** Reordered `SimulateMode.onComplete`: stop the periodic flush timer first, drain any remaining buffered events / snapshots, snap `currentVirtualTimeMs` to `cfg.durationMs`, then `setStatus('completed')`. The metrics card now closes its sums and the playback timer reads the configured duration in the same paint as the COMPLETED pill.
+
+### P1 fixes
+
+- **R3-4: paired-percentile validation.** New `LatencyPair` field component bakes the `p99 ≥ p50` invariant into the editor: bumping p50 past p99 auto-bumps p99; lowering p99 below p50 floors at p50. Threaded through every form that has a latency pair (Edge, App Server, Cache, CDN, Database — three pairs! — External Service, Object Storage, Pub/Sub).
+- **R3-5: inspector field upper bounds.** Added `max=` to every numeric input that previously had only `min=`: capacities ≤ 1e6, latency / timeouts ≤ 60_000 ms (visibility / health-check ≤ 600_000 ms), RPS ≤ 100_000, replicas ≤ 100, throughput ≤ 1e6, queue depths ≤ 1e6.
+- **R3-6: graph-rejection feedback.** New `ToastHost` + `useUIStore.pushToast`. `DesignCanvas.onConnect` now rejects self-loops and cycles explicitly and surfaces a toast for either case ("Can't connect a node to itself", "That edge would create a cycle. Cycles aren't supported in v1").
+- **R3-7: palette overlap on Build mode.** When entering Build with a `demo-`-prefixed design, the canvas calls `fitView({ padding: 0.2 })` *and* auto-collapses the palette so the leftmost node is visible without manual interaction.
+- **R3-8: per-route title de-dup.** `useDocumentHead`-bound title strips a leading `Demo: ` from the design name, so a share-link load (`?d=...`) of a design called `Demo: Cache stampede` renders as `sysdraw · Cache stampede`, matching the `?demo=` form.
+
+### P2 fixes
+
+- **R3-9: bound the inspector reading order.** Wrapped the inspector content in `<div role="region" aria-label="Inspector content">` so screen readers don't bleed sibling text (chart axis labels, etc.) into the Inspector landmark.
+- **R3-10: shrink share-URL payload.** New `src/persistence/designCodec.ts` strips every node / edge param that equals the type's `createDefault*()` value before lz-string compression and refills them on decode. Cache-stampede's encoded payload now lands well under 1 KB (was ~1346 chars). Round-trip is property-tested across every shippable demo (`src/persistence/__tests__/urlShare.test.ts`).
+- **R3-12: reset clears the playback timer.** `SimulateMode.reset` now explicitly calls `setVirtualTime(0)` so the `t = …s` indicator clears alongside the rest of the run state instead of staying frozen at the last value until the next Run.
+
+### P3 fixes
+
+- **R3-11: Pause button is now always mounted, disabled when the sim isn't running, with a tooltip that explains why short sims look like the button never appears ("drop the Speed selector to 0.5× or 0.25× to give yourself time to click").**
+
+### Verification
+
+- `npm run typecheck` clean
+- `npm run lint` clean
+- `npm test` — 35/35 (24 prior + 2 R3-1 regression tests in `determinism.test.ts` + 9 share-link round-trip tests in `urlShare.test.ts`)
+- `npm run build` clean
+
 ## v1 launch — round 2 bug sweep (May 8, 2026)
 
 Round-2 report (`sysdraw-bug-report-round2.md`) flagged 15 issues, with 3 P0 demos that didn't actually demonstrate their stated failure mode plus the consequent in-flight accounting hole. All 15 addressed; tests still 24/24 green; build clean.

@@ -28,6 +28,7 @@ export function QueueParamsForm({ node }: Props) {
         value={node.params.max_depth}
         onChange={(v) => update(node.id, 'queue', { max_depth: Math.round(v) })}
         min={0}
+        max={1_000_000}
         step={1}
         hint="0 = unbounded"
       />
@@ -36,6 +37,7 @@ export function QueueParamsForm({ node }: Props) {
         value={node.params.consumer_processing_rps}
         onChange={(v) => update(node.id, 'queue', { consumer_processing_rps: v })}
         min={0}
+        max={1_000_000}
         suffix="rps"
       />
       <NumberField
@@ -43,6 +45,7 @@ export function QueueParamsForm({ node }: Props) {
         value={node.params.visibility_timeout_ms}
         onChange={(v) => update(node.id, 'queue', { visibility_timeout_ms: v })}
         min={0}
+        max={600_000}
         suffix="ms"
       />
       <SelectField

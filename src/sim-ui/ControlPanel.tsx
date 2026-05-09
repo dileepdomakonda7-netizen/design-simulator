@@ -48,14 +48,6 @@ export function ControlPanel({
             ▶ Run
           </button>
         )}
-        {isRunning && (
-          <button
-            onClick={onPause}
-            className="text-sm px-3 py-1.5 rounded border border-neutral-300 hover:bg-neutral-50"
-          >
-            ⏸ Pause
-          </button>
-        )}
         {isPaused && (
           <button
             onClick={onResume}
@@ -64,6 +56,28 @@ export function ControlPanel({
             ▶ Resume
           </button>
         )}
+        {/* Round-3 R3-11: keep the Pause button mounted — at 5s × 1× the
+            sim completes in well under a second of wall-clock so the
+            "Pause" button used to flash by before users could click it.
+            Now it stays disabled when not running, and its tooltip
+            explains the reachability tradeoff with speed. */}
+        <button
+          onClick={onPause}
+          disabled={!isRunning}
+          title={
+            !isRunning
+              ? 'Pause is reachable only while a run is in progress. For short sims, drop the Speed selector to 0.5× or 0.25× to give yourself time to click.'
+              : 'Pause the simulation'
+          }
+          className={[
+            'text-sm px-3 py-1.5 rounded border',
+            isRunning
+              ? 'border-neutral-300 hover:bg-neutral-50'
+              : 'border-neutral-200 text-neutral-300 cursor-not-allowed',
+          ].join(' ')}
+        >
+          ⏸ Pause
+        </button>
         {isActive && (
           <button
             onClick={onCancel}

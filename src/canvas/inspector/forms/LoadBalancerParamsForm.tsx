@@ -30,6 +30,7 @@ export function LoadBalancerParamsForm({ node }: Props) {
         value={node.params.max_connections}
         onChange={(v) => update(node.id, 'load_balancer', { max_connections: Math.round(v) })}
         min={1}
+        max={1_000_000}
         step={1}
       />
       <NumberField
@@ -37,6 +38,7 @@ export function LoadBalancerParamsForm({ node }: Props) {
         value={node.params.health_check_interval_ms}
         onChange={(v) => update(node.id, 'load_balancer', { health_check_interval_ms: v })}
         min={0}
+        max={600_000}
         suffix="ms"
       />
       <SliderField
