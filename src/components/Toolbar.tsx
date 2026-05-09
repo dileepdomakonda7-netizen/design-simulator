@@ -21,7 +21,17 @@ export function Toolbar() {
     ].join(' ')
 
   return (
-    <header className="flex items-center gap-3 px-4 h-12 min-h-12 max-h-12 border-b border-gray-200 bg-white shrink-0 overflow-hidden">
+    <header
+      // Round-2 R-9 pinned the toolbar height to stop the Run button
+      // from drifting; round-3 review found the original
+      // `max-h-12 overflow-hidden` combo was clipping the File-menu
+      // dropdown (it's `absolute top-full` inside a `relative` wrapper
+      // inside this header — `overflow: hidden` eats descendants that
+      // extend below the 48px header line). `h-12` is a fixed height,
+      // not a max, and `min-h-12` defensively prevents shrinkage; the
+      // overflow clip isn't needed.
+      className="flex items-center gap-3 px-4 h-12 min-h-12 border-b border-gray-200 bg-white shrink-0"
+    >
       <ModeToggle />
 
       <div className="h-5 w-px bg-gray-200" />
