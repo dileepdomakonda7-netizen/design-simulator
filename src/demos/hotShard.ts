@@ -39,7 +39,16 @@ function client(id: string, label: string, x: number, y: number, rps: number): D
   }
 }
 
-function shard(id: string, label: string, x: number, y: number): Design['nodes'][number] {
+function shard(
+  id: string,
+  label: string,
+  x: number,
+  y: number,
+  readCapacityRps: number,
+  readLatencyP50: number,
+  readLatencyP99: number,
+  readQueueMaxDepth: number,
+): Design['nodes'][number] {
   return {
     id,
     position: { x, y },
@@ -49,17 +58,17 @@ function shard(id: string, label: string, x: number, y: number): Design['nodes']
     params: {
       subtype: 'kv',
       replicas: 1,
-      read_capacity_rps: 200,
+      read_capacity_rps: readCapacityRps,
       write_capacity_rps: 1000,
       replication_mode: 'async',
       replication_lag_ms_p50: 0,
       replication_lag_ms_p99: 0,
-      read_latency_ms_p50: 5,
-      read_latency_ms_p99: 30,
+      read_latency_ms_p50: readLatencyP50,
+      read_latency_ms_p99: readLatencyP99,
       write_latency_ms_p50: 10,
       write_latency_ms_p99: 80,
       failure_rate: 0,
-      read_queue_max_depth: 50,
+      read_queue_max_depth: readQueueMaxDepth,
       rejection_policy: 'reject_newest',
     },
   }
@@ -98,9 +107,14 @@ function buildDesign(): Design {
       client('cli_hot', 'Client (hot key)', 60, 100, 80),
       client('cli_warm1', 'Client (warm)', 60, 240, 10),
       client('cli_warm2', 'Client (warm)', 60, 380, 10),
-      shard('shard_1', 'Shard 1', 360, 100),
-      shard('shard_2', 'Shard 2', 360, 240),
-      shard('shard_3', 'Shard 3', 360, 380),
+      // Shard 1 is the "hot" shard. Capacity / queue / latency are tuned so
+      // 80 rps overruns it: at p50=120ms latency the steady-state in-flight
+      // is ~10, well above the cap of 5 — the queue (depth 10) fills, then
+      // requests start rejecting. Shards 2 and 3 keep their baseline cap of
+      // 200 so 10 rps barely registers.
+      shard('shard_1', 'Shard 1 (hot key)', 360, 100, 5, 120, 400, 10),
+      shard('shard_2', 'Shard 2', 360, 240, 200, 5, 30, 50),
+      shard('shard_3', 'Shard 3', 360, 380, 200, 5, 30, 50),
     ],
     edges: [
       syncEdge('e_hot_s1', 'cli_hot', 'shard_1'),
@@ -141,10 +155,10 @@ export const scenario: DemoScenario = {
   slug: 'hot-shard',
   cardLabel: 'Hot shard',
   cardBlurb:
-    'Three database shards, but 80% of traffic targets one of them. That shard saturates while the other two idle.',
-  bannerHeadline: 'Hot shard (approximation)',
+    'Three database shards, but 80% of traffic is keyed to one of them. Watch its queue saturate while the others idle.',
+  bannerHeadline: 'Hot shard',
   bannerBody:
-    'The engine does not model true horizontal sharding; this approximates the dynamics with three independent client→shard pairs at skewed RPS. In a real sharded system, hot keys cause one shard to saturate while others sit idle. Notice shard 1 saturating (queue fills, reads start rejecting) while shards 2 and 3 are barely used — even though aggregate capacity is 3× shard 1.',
+    'Three database shards. Eighty percent of traffic is keyed to shard 1; shards 2 and 3 split the rest. Watch shard 1 saturate (queue fills, reads start rejecting) while shards 2 and 3 sit idle — even though aggregate capacity across the three is many times shard 1 alone. This is what hot keys do to a sharded system.',
   buildDesign,
   buildTraffic,
   defaultSimConfig: { seed: 42, durationMs: 5000, rps: 80 },

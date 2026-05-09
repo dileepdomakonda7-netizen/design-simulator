@@ -426,14 +426,14 @@ function ChaosRow({
             value={spec.at_ms}
             onChange={(v) => onChange({ at_ms: v })}
             min={0}
-            max={Math.max(0, durationMs - 1)}
+            max={durationMs}
           />
           <NumPair
             label="duration (ms)"
             value={spec.duration_ms}
             onChange={(v) => onChange({ duration_ms: v })}
-            min={1}
-            max={Math.max(1, durationMs - spec.at_ms)}
+            min={0}
+            max={Math.max(0, durationMs - spec.at_ms)}
           />
           {(spec.kind === 'node_crash' ||
             spec.kind === 'cache_miss_storm' ||

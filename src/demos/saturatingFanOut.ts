@@ -143,10 +143,10 @@ export const scenario: DemoScenario = {
   slug: 'saturating-fan-out',
   cardLabel: 'Saturating fan-out',
   cardBlurb:
-    'Three downstream services share traffic round-robin; one is degraded 10×. System-wide p99 tracks the slow one.',
-  bannerHeadline: 'Saturating fan-out (approximation)',
+    'Three downstream services share traffic; one is 10× slow. System-wide p99 tracks the slow one.',
+  bannerHeadline: 'Saturating fan-out',
   bannerBody:
-    'The router round-robins requests across three downstream services; one (Service C) is degraded 10× slower. Even though only ~1/3 of requests hit the slow service, the system-wide p99 tracks it. This is the tail-at-scale lesson: in fan-out (or load-balanced) architectures, your latency is bounded by your slowest dependency.',
+    'Requests are spread across three downstream services. Service C is 10× slower than its peers. Even though only about a third of requests hit the slow service, the system-wide p99 latency tracks it. This is the tail-at-scale lesson: your latency is bounded by your slowest dependency.',
   buildDesign,
   buildTraffic,
   defaultSimConfig: { seed: 42, durationMs: 5000, rps: 20 },

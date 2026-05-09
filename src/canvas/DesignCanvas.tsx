@@ -130,9 +130,17 @@ function DesignCanvasInner() {
     })
   }, [schemaEdges, setRfEdges])
 
-  // Restore viewport on design change.
+  // Restore viewport on design change. For demo designs the build-mode
+  // palette overlay (~155px on the left) can hide the leftmost node at the
+  // pan position the design was authored with — round-2 R-8. Detect that
+  // case (id starting with `demo-`) and prefer fitView with padding so the
+  // entire graph is visible from any viewport size.
   useEffect(() => {
-    reactFlow.setViewport(viewport)
+    if (designId.startsWith('demo-')) {
+      reactFlow.fitView({ padding: 0.2 })
+    } else {
+      reactFlow.setViewport(viewport)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [designId])
 

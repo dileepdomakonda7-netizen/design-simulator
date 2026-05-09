@@ -35,7 +35,8 @@ export function DesignNameEditor() {
           e.currentTarget.blur()
         }
       }}
-      className="text-sm font-medium text-gray-800 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-gray-500 focus:outline-none px-1 py-0.5 min-w-32 max-w-64"
+      size={Math.max(16, localName.length + 2)}
+      className="text-sm font-medium text-gray-800 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-gray-500 focus:outline-none px-1 py-0.5 min-w-32 max-w-96 text-ellipsis"
       aria-label="Design name"
     />
   )

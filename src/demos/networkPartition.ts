@@ -31,7 +31,12 @@ function appServer(id: string, label: string, x: number, y: number): Design['nod
   }
 }
 
-function syncEdge(id: string, source: string, target: string): Design['edges'][number] {
+function syncEdge(
+  id: string,
+  source: string,
+  target: string,
+  timeoutMs: number,
+): Design['edges'][number] {
   return {
     id,
     source,
@@ -40,7 +45,7 @@ function syncEdge(id: string, source: string, target: string): Design['edges'][n
     params: {
       network_latency_ms_p50: 1,
       network_latency_ms_p99: 5,
-      timeout_ms: 5000,
+      timeout_ms: timeoutMs,
       retry_policy: { kind: 'none' },
       circuit_breaker: {
         enabled: false,
@@ -113,13 +118,18 @@ function buildDesign(): Design {
       },
     ],
     edges: [
-      syncEdge('e_cli_lb', 'cli', 'lb'),
-      syncEdge('e_lb_app1', 'lb', 'app1'),
-      syncEdge('e_lb_app2', 'lb', 'app2'),
-      syncEdge('e_lb_app3', 'lb', 'app3'),
-      syncEdge('e_app1_db', 'app1', 'db'),
-      syncEdge('e_app2_db', 'app2', 'db'),
-      syncEdge('e_app3_db', 'app3', 'db'),
+      // 5s client-side timeout; the lesson runs on the LB→app edges.
+      syncEdge('e_cli_lb', 'cli', 'lb', 5000),
+      // Tight 800ms LB→app timeout so requests routed to the partitioned
+      // app server fail visibly during the 1500ms partition window
+      // (without this, the timeout extends past sim_end and the user sees
+      // the "in flight" bucket grow but no error-rate climb).
+      syncEdge('e_lb_app1', 'lb', 'app1', 800),
+      syncEdge('e_lb_app2', 'lb', 'app2', 800),
+      syncEdge('e_lb_app3', 'lb', 'app3', 800),
+      syncEdge('e_app1_db', 'app1', 'db', 5000),
+      syncEdge('e_app2_db', 'app2', 'db', 5000),
+      syncEdge('e_app3_db', 'app3', 'db', 5000),
     ],
     annotations: [],
     sketches: [],

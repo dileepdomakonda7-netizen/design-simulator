@@ -1,5 +1,39 @@
 # Progress
 
+## v1 launch — round 2 bug sweep (May 8, 2026)
+
+Round-2 report (`sysdraw-bug-report-round2.md`) flagged 15 issues, with 3 P0 demos that didn't actually demonstrate their stated failure mode plus the consequent in-flight accounting hole. All 15 addressed; tests still 24/24 green; build clean.
+
+### What this round added
+
+- **Engine: finalize in-flight at simulation_end (R-2).** New `SimulationEngine.finalizeInFlightRequests` walks every request still in flight when `simulation_end` fires, emits a synthetic `request_response` (`success: false`, `abandoned: true`) at the request's origin, and runs each through `maybeFinalize` so `cumFailedRequests` increments. This closes the `arrived = completed + failed` math whenever the user runs a scenario where rate-limit / partition rejections don't propagate a response back upstream within the sim duration. Events get fresh deterministic ids from `nextEventId` and are sorted by request id before iteration, so digests stay stable.
+- **R-1 demo retunes:**
+  - **network-partition** — LB→app edge timeouts dropped from 5000 ms → 800 ms so requests routed to the partitioned app server actually time out within the 1500 ms partition window. Combined with the at-sim-end finalization, the error rate now climbs visibly during 2000–3500 ms.
+  - **hot-shard** — shard 1 capacity tightened: `read_capacity_rps 200 → 5`, queue 50 → 10, latency p50/p99 5/30 → 120/400. At 80 rps the in-flight pressure overruns the cap, the queue fills, then `request_reject` events fire at shard 1. Shards 2 and 3 retain the original 200 cap and stay idle.
+  - **thundering-herd** — LB→ext timeout 5000 ms → 600 ms, so rate-limit rejections at the shared service surface as failures inside the 1000 ms spike window. The 10 clients are now laid out in a 2×5 grid (R-5) instead of a single overlapping column.
+  - Smoke-checked locally: all three scenarios at seed 42 produce non-zero failure signals at their named nodes (`cli` failure-final responses for partition; `shard_1` rejects for hot-shard; `ext` rejects for thundering-herd).
+- **R-3 invalid demo URL → friendly fallback.** When `?demo=<slug>` resolves to nothing, `App.tsx` renders a 404-style page listing the live scenarios with `Link`s to each, instead of silently loading the most recent localStorage design.
+- **R-4 design-name input ellipsis.** `DesignNameEditor` widened to `max-w-96` and the `<input size>` now tracks `localName.length` so demo titles like "Demo: Read-after-write surprise" render in full.
+- **R-5 client overlap** — see thundering-herd retune above.
+- **R-6 keyboard-add stacks.** Palette's Enter/Space handler now offsets each new node by `(count % 6, count / 6) × 32` so successive keyboard adds cascade across the canvas instead of stacking at one position.
+- **R-7 Pen aria-pressed.** `PenToolGroup` Pen and Eraser buttons now expose `aria-pressed`. Pen tooltip dropped the misleading "(Build mode only)" suffix — the toolbar already gates the whole group on `mode === 'build'`.
+- **R-8 palette covers leftmost demo node.** When the Build-mode canvas opens with a `demo-`-prefixed design id, `DesignCanvas` now calls `reactFlow.fitView({ padding: 0.2 })` instead of restoring the persisted viewport, so the leftmost client isn't hidden behind the palette overlay.
+- **R-9 unstable Run-button position.** Toolbar pinned with `min-h-12 max-h-12 overflow-hidden`. ControlPanel pinned with `h-11 min-h-11 max-h-11 overflow-y-hidden` so the Run button stays at the same y-coordinate across mode/state transitions.
+- **R-10 1× live runs hang the UI.** Worker → main streaming switched from per-event `setState` to buffered batch flushes. New `appendEvents` and `appendSnapshots` actions on `simStore`; `SimulateMode` accumulates events and snapshots in refs and drains them through a 80 ms `setInterval` (≈12 Hz), with a final `drainBuffers` on the worker's `onComplete` so the digest still sees the full event stream. Long sims at 1× now stay responsive.
+- **R-11 dead millisecond on chaos `at`.** `at` clamp widened from `[0, durationMs - 1]` to `[0, durationMs]`; `duration` clamp now `[0, durationMs - at]`. The compiler still skips `spec.at_ms >= durationMs`, so a chaos that starts at the very end is a clean no-op.
+- **R-12 demo storage IDs match URL slugs.** `circuitBreakerPartialFailure.ts` design id renamed `demo-cb-partial → demo-circuit-breaker-partial-failure`. The other six demos already matched. The `clearPersistedDemoDesigns` migration covers `demo-*`, so old `demo-cb-partial` entries get cleaned up on next page load.
+- **R-13 banner copy cleanup.** Both `saturating-fan-out` and `hot-shard` banners rewritten to focus on the lesson, not the engine. `(approximation)` removed from the bannerHeadline; engine-internals language ("the engine does not model true horizontal sharding…") replaced with "Watch shard 1 saturate while shards 2 and 3 sit idle."
+- **R-14 Pen tooltip cleanup** — combined with R-7.
+- **R-15 `/app` (no demo) title.** When neither a scenario nor a `demoNotFound` is in play, `useDocumentHead` renders `sysdraw · {design.name}` instead of the bare `sysdraw`.
+
+### Verification
+
+- `npm run typecheck` clean
+- `npm run lint` clean
+- `npm test` 24/24 (existing determinism suite still passes; the engine's at-sim-end finalization is deterministic, so two runs of every scenario at seed 42 still produce identical event arrays / digests)
+- `npm run build` clean
+- Smoke check (run-once, asserted, then deleted to avoid CI bloat): network-partition produces non-zero failed final responses at `cli`; hot-shard produces non-zero rejects at `shard_1`; thundering-herd produces non-zero rejects at `ext`.
+
 ## v1 launch — bug sweep from end-to-end report (May 8, 2026)
 
 Worked through the 24-bug end-to-end report (P0–P3 + quick wins). All P0/P1/P2/P3 items addressed across nine logical batches; tests still 24/24, build clean.

@@ -21,7 +21,7 @@ export function Toolbar() {
     ].join(' ')
 
   return (
-    <header className="flex items-center gap-3 px-4 h-12 border-b border-gray-200 bg-white shrink-0">
+    <header className="flex items-center gap-3 px-4 h-12 min-h-12 max-h-12 border-b border-gray-200 bg-white shrink-0 overflow-hidden">
       <ModeToggle />
 
       <div className="h-5 w-px bg-gray-200" />

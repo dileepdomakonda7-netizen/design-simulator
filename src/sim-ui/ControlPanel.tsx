@@ -38,7 +38,7 @@ export function ControlPanel({
   const inputsLocked = isActive
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2 border-b border-neutral-200 bg-white shrink-0 overflow-x-auto">
+    <div className="flex items-center gap-3 px-4 h-11 min-h-11 max-h-11 border-b border-neutral-200 bg-white shrink-0 overflow-x-auto overflow-y-hidden">
       <div className="flex items-center gap-1">
         {!isActive && (
           <button

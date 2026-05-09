@@ -8,7 +8,8 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { DesignCanvas } from '@/canvas/DesignCanvas'
 import { SimDebugPage } from '@/sim/debugPage/SimDebugPage'
 import { SimulateMode, type DemoModeOptions } from '@/sim-ui/SimulateMode'
-import { getScenario, type DemoScenario } from '@/demos'
+import { getScenario, DEMO_SCENARIOS, type DemoScenario } from '@/demos'
+import { Link } from 'react-router-dom'
 import { decodeDesignFromUrl } from '@/persistence/urlShare'
 import { useDocumentHead } from '@/hooks/useDocumentHead'
 
@@ -49,10 +50,21 @@ export default function App() {
   const useDebugSim = debug === 'sim'
 
   const scenario: DemoScenario | undefined = demoName ? getScenario(demoName) : undefined
+  // Round-2 R-3: distinguish "no demo asked for" (scenario === undefined,
+  // demoName === null) from "demo asked for, but slug doesn't exist or is
+  // marked comingSoon" (scenario === undefined, demoName !== null). The
+  // latter renders an inline 404-style fallback instead of silently
+  // falling through to localStorage's last-loaded design.
+  const demoNotFound = demoName !== null && scenario === undefined
   const [shareError, setShareError] = useState<string | null>(null)
+  const designName = useDesignStore((s) => s.design.name)
 
   useDocumentHead({
-    title: scenario ? `sysdraw · ${scenario.cardLabel}` : 'sysdraw',
+    title: scenario
+      ? `sysdraw · ${scenario.cardLabel}`
+      : demoNotFound
+        ? 'sysdraw · Demo not found'
+        : `sysdraw · ${designName}`,
     pathAndQuery: scenario ? `/app?demo=${scenario.slug}` : '/app',
     ...(scenario ? { description: scenario.cardBlurb } : {}),
   })
@@ -64,6 +76,14 @@ export default function App() {
       // banner is rendered inside SimulateMode.
       useDesignStore.getState().loadDesign(scenario.buildDesign())
       setMode('simulate')
+      return
+    }
+
+    if (demoNotFound) {
+      // The user asked for a specific demo that we don't recognize. Don't
+      // fall through to "load the most recent localStorage design" — that
+      // produced the silent "boots into Untitled Design" failure mode in
+      // round 2. The render branch below shows an inline error instead.
       return
     }
 
@@ -101,7 +121,7 @@ export default function App() {
     if (latest === undefined) return
     const design = loadDesignById(latest.id)
     if (design) useDesignStore.getState().loadDesign(design)
-  }, [scenario, sharedEncoded, setMode])
+  }, [scenario, sharedEncoded, setMode, demoNotFound])
 
   const demoOptions = useMemo<DemoModeOptions>(() => {
     if (!scenario) return {}
@@ -122,6 +142,38 @@ export default function App() {
       trafficOverride: scenario.buildTraffic(design),
     }
   }, [scenario, autoplay, embed])
+
+  if (demoNotFound) {
+    const liveScenarios = DEMO_SCENARIOS.filter((s) => !s.comingSoon)
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-8 text-center bg-gray-50">
+        <h1 className="text-lg font-semibold text-neutral-800 mb-2">
+          Demo not found
+        </h1>
+        <p className="text-sm text-neutral-600 max-w-md mb-4">
+          There&apos;s no demo registered with the slug{' '}
+          <code className="font-mono bg-neutral-200 px-1 rounded">{demoName}</code>.
+          The slug may have changed, or the link may have a typo.
+        </p>
+        <p className="text-xs text-neutral-500 mb-3">Try one of:</p>
+        <ul className="text-sm space-y-1 mb-6">
+          {liveScenarios.map((s) => (
+            <li key={s.slug}>
+              <Link
+                to={`/app?demo=${s.slug}`}
+                className="text-blue-600 underline hover:text-blue-800"
+              >
+                {s.cardLabel}
+              </Link>
+            </li>
+          ))}
+        </ul>
+        <Link to="/" className="text-sm text-neutral-600 underline hover:text-neutral-900">
+          ← Back to sysdraw
+        </Link>
+      </div>
+    )
+  }
 
   if (shareError) {
     return (

@@ -88,14 +88,24 @@ export function Palette() {
               onDragStart={(e) => onDragStart(e, t)}
               onKeyDown={(e) => {
                 // Keyboard fallback for the drag-and-drop palette: Enter or
-                // Space adds the node at a default position near the canvas
-                // origin. Pointer users still get the full drag-target
-                // affordance.
+                // Space adds the node. Round-2 R-6: cascade the position by
+                // existing-node count so successive Enter presses don't
+                // stack every node at the same coordinates.
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
-                  useDesignStore.getState().addNode(
-                    createDefaultNode(t, { x: 240, y: 240 }),
-                  )
+                  const count = useDesignStore.getState().design.nodes.length
+                  const STRIDE = 32
+                  const PER_ROW = 6
+                  const col = count % PER_ROW
+                  const row = Math.floor(count / PER_ROW)
+                  useDesignStore
+                    .getState()
+                    .addNode(
+                      createDefaultNode(t, {
+                        x: 240 + col * STRIDE,
+                        y: 240 + row * STRIDE,
+                      }),
+                    )
                 }
               }}
               aria-label={`Add ${label} node`}

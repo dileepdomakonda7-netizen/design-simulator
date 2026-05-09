@@ -17,10 +17,15 @@ const NOW = '2026-05-08T00:00:00.000Z'
 const CLIENT_COUNT = 10
 const PER_CLIENT_RPS = 10
 
-function clientNode(id: string, label: string, y: number): Design['nodes'][number] {
+function clientNode(
+  id: string,
+  label: string,
+  x: number,
+  y: number,
+): Design['nodes'][number] {
   return {
     id,
-    position: { x: 60, y },
+    position: { x, y },
     label,
     notes: '',
     type: 'client',
@@ -33,7 +38,12 @@ function clientNode(id: string, label: string, y: number): Design['nodes'][numbe
   }
 }
 
-function syncEdge(id: string, source: string, target: string): Design['edges'][number] {
+function syncEdge(
+  id: string,
+  source: string,
+  target: string,
+  timeoutMs: number,
+): Design['edges'][number] {
   return {
     id,
     source,
@@ -42,7 +52,7 @@ function syncEdge(id: string, source: string, target: string): Design['edges'][n
     params: {
       network_latency_ms_p50: 1,
       network_latency_ms_p99: 5,
-      timeout_ms: 5000,
+      timeout_ms: timeoutMs,
       retry_policy: { kind: 'none' },
       circuit_breaker: {
         enabled: false,
@@ -56,16 +66,22 @@ function syncEdge(id: string, source: string, target: string): Design['edges'][n
 }
 
 function buildDesign(): Design {
+  // Lay the 10 clients out in a 2-column × 5-row grid so they don't overlap
+  // (round-1 they were stacked in a single column at x=60 with 70px stride —
+  // each node is 80px tall, so adjacent labels collided). LB sits to the
+  // right of the grid; external service to the right of the LB.
   const clients: Design['nodes'] = []
   const edges: Design['edges'] = []
-  const Y_TOP = 60
-  const Y_STEP = 70
+  const COL_X = [40, 240] as const
+  const ROW_Y = [40, 140, 240, 340, 440] as const
   for (let i = 0; i < CLIENT_COUNT; i++) {
     const id = `cli${i + 1}`
-    clients.push(clientNode(id, `Client #${i + 1}`, Y_TOP + i * Y_STEP))
-    edges.push(syncEdge(`e_${id}_lb`, id, 'lb'))
+    const col = i % COL_X.length
+    const row = Math.floor(i / COL_X.length)
+    clients.push(clientNode(id, `Client #${i + 1}`, COL_X[col]!, ROW_Y[row]!))
+    edges.push(syncEdge(`e_${id}_lb`, id, 'lb', 5000))
   }
-  const lbY = Y_TOP + ((CLIENT_COUNT - 1) * Y_STEP) / 2
+  const lbY = (ROW_Y[0]! + ROW_Y[ROW_Y.length - 1]!) / 2
 
   return {
     schemaVersion: 1,
@@ -77,7 +93,7 @@ function buildDesign(): Design {
       ...clients,
       {
         id: 'lb',
-        position: { x: 360, y: lbY },
+        position: { x: 480, y: lbY },
         label: 'Load balancer',
         notes: '',
         type: 'load_balancer',
@@ -90,7 +106,7 @@ function buildDesign(): Design {
       },
       {
         id: 'ext',
-        position: { x: 660, y: lbY },
+        position: { x: 780, y: lbY },
         label: 'Shared service',
         notes: '',
         type: 'external_service',
@@ -103,7 +119,11 @@ function buildDesign(): Design {
         },
       },
     ],
-    edges: [...edges, syncEdge('e_lb_ext', 'lb', 'ext')],
+    // 600ms LB→ext timeout: rate-limited rejections at the service emit
+    // request_reject without forwarding a response, so the LB only sees a
+    // failure when its own timeout fires. Tight enough for failures to
+    // surface during the 1000ms spike window instead of past sim_end.
+    edges: [...edges, syncEdge('e_lb_ext', 'lb', 'ext', 600)],
     annotations: [],
     sketches: [],
     viewport: { x: 0, y: 0, zoom: 1 },

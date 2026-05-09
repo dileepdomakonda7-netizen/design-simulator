@@ -70,8 +70,8 @@ export function SimulateMode({
   const setStatus = useSimStore((s) => s.setStatus)
   const setConfig = useSimStore((s) => s.setConfig)
   const setDigest = useSimStore((s) => s.setDigest)
-  const appendEvent = useSimStore((s) => s.appendEvent)
-  const appendSnapshot = useSimStore((s) => s.appendSnapshot)
+  const appendEvents = useSimStore((s) => s.appendEvents)
+  const appendSnapshots = useSimStore((s) => s.appendSnapshots)
   const clearStream = useSimStore((s) => s.clearStream)
 
   // All events of the current run, accumulated for the digest.
@@ -80,9 +80,34 @@ export function SimulateMode({
   const workerRef = useRef<Worker | null>(null)
   const apiRef = useRef<Comlink.Remote<SimulationWorkerApi> | null>(null)
 
+  // Round-2 R-10: throttle worker→main updates. The worker emits events
+  // one-at-a-time via Comlink.proxy; pushing each through a separate
+  // setState made the chart + event-log re-render hundreds of times per
+  // simulated second. We buffer in refs and flush on a setInterval at
+  // FLUSH_HZ. The refs are also drained on the worker's onComplete so
+  // the digest is computed against the full event stream.
+  const eventBufferRef = useRef<SimEvent[]>([])
+  const snapshotBufferRef = useRef<SimSnapshot[]>([])
+  const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const drainBuffers = useCallback(() => {
+    if (eventBufferRef.current.length > 0) {
+      appendEvents(eventBufferRef.current)
+      eventBufferRef.current = []
+    }
+    if (snapshotBufferRef.current.length > 0) {
+      appendSnapshots(snapshotBufferRef.current)
+      snapshotBufferRef.current = []
+    }
+  }, [appendEvents, appendSnapshots])
+
   // Cleanup on unmount.
   useEffect(() => {
     return () => {
+      if (flushTimerRef.current !== null) {
+        clearInterval(flushTimerRef.current)
+        flushTimerRef.current = null
+      }
       apiRef.current?.cancel()
       workerRef.current?.terminate()
       workerRef.current = null
@@ -144,18 +169,32 @@ export function SimulateMode({
 
       clearStream()
       allEventsRef.current = []
+      eventBufferRef.current = []
+      snapshotBufferRef.current = []
       setConfig(cfg)
       setStatus('running')
       await api.setSpeed(speed)
 
+      // Start the flush loop. ~12 Hz keeps the chart visibly live but
+      // collapses many events into a single setState batch.
+      if (flushTimerRef.current !== null) clearInterval(flushTimerRef.current)
+      flushTimerRef.current = setInterval(drainBuffers, 80)
+
       const onEvent = (ev: SimEvent) => {
         allEventsRef.current.push(ev)
-        appendEvent(ev)
+        eventBufferRef.current.push(ev)
       }
       const onSnapshot = (snap: SimSnapshot) => {
-        appendSnapshot(snap)
+        snapshotBufferRef.current.push(snap)
       }
       const onComplete = () => {
+        // Drain any remaining buffered events / snapshots before computing
+        // the digest so latestSnapshot reflects the final tick.
+        drainBuffers()
+        if (flushTimerRef.current !== null) {
+          clearInterval(flushTimerRef.current)
+          flushTimerRef.current = null
+        }
         const d = computeDigest(allEventsRef.current)
         setDigest(d)
         const wasCancelled = useSimStore.getState().status === 'cancelled'
@@ -174,7 +213,7 @@ export function SimulateMode({
         setStatus('idle')
       }
     },
-    [appendEvent, appendSnapshot, buildConfig, clearStream, setConfig, setDigest, setStatus],
+    [buildConfig, clearStream, drainBuffers, setConfig, setDigest, setStatus],
   )
 
   const pause = useCallback(async () => {

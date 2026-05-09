@@ -19,7 +19,7 @@ const NOW = '2026-05-04T00:00:00.000Z'
 function buildDesign(): Design {
   return {
     schemaVersion: 1,
-    id: 'demo-cb-partial',
+    id: 'demo-circuit-breaker-partial-failure',
     name: 'Demo: Circuit breaker + partial failure',
     createdAt: NOW,
     updatedAt: NOW,

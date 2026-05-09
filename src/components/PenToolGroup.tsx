@@ -30,7 +30,8 @@ export function PenToolGroup() {
       <button
         onClick={() => setPenTool(isPen ? 'off' : 'pen')}
         className={btn(isPen)}
-        title="Pen — annotate the canvas (Build mode only)"
+        aria-pressed={isPen}
+        title="Pen — annotate the canvas"
       >
         ✎ Pen
       </button>
@@ -39,6 +40,7 @@ export function PenToolGroup() {
           <button
             onClick={() => setPenTool(isEraser ? 'pen' : 'eraser')}
             className={btn(isEraser)}
+            aria-pressed={isEraser}
             title="Eraser — click a stroke to delete"
           >
             ⌫ Eraser

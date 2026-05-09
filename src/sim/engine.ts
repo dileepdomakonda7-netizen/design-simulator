@@ -264,7 +264,18 @@ export class SimulationEngine {
       this.onEvent(ev)
       this.processEvent(ev)
 
-      if (ev.kind === 'simulation_end') break
+      if (ev.kind === 'simulation_end') {
+        // Round-2 R-2: synthesize a final failure response for every
+        // request still in the in-flight map. Without this, requests
+        // whose timeouts extend past durationMs (rate-limited /
+        // partitioned with a long edge timeout) sit forever in
+        // `requests` and never reach the cumulative `failed` bucket —
+        // the user sees `arrived = completed + failed + inFlight` not
+        // closing, and the "system collapsed" lesson reads as "nothing
+        // happened" in the metrics panel.
+        this.finalizeInFlightRequests(ev.id, ev.at)
+        break
+      }
 
       processedSinceYield++
       if (processedSinceYield >= this.yieldEvery) {
@@ -487,6 +498,48 @@ export class SimulationEngine {
     // (e) Finalize at origin (drop from in-flight map). Done AFTER behavior
     //     so the client behavior can read the response one last time.
     this.maybeFinalize(ev, request)
+  }
+
+  /**
+   * Round-2 R-2 fix. Walk every request still in the in-flight map at
+   * simulation_end and emit a synthetic `request_response` (success=false,
+   * abandoned=true) targeting that request's origin. Each synthesized event
+   * gets a fresh deterministic event id from `nextEventId`, is appended to
+   * the log, surfaced via `onEvent`, and bumped through `maybeFinalize` so
+   * the running `cumFailedRequests` counter stays consistent.
+   *
+   * The events carry `payload.abandoned = true` so the UI can distinguish
+   * them from normal failure responses (e.g. for an "abandoned at sim end"
+   * tooltip later); the engine doesn't otherwise treat them differently.
+   */
+  private finalizeInFlightRequests(causeEventId: EventId, at: number): void {
+    // Snapshot first so the `maybeFinalize` deletes don't mutate during
+    // iteration. Sort by request id for determinism — Map iteration order
+    // is insertion-order in v8 today, but pinning explicitly keeps the
+    // digest stable across engines and arrival reorderings.
+    const inFlight = [...this.requests.values()].sort((a, b) =>
+      a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+    )
+    for (const req of inFlight) {
+      const id = this.nextEventId++
+      const ev: SimEvent = {
+        id,
+        at,
+        kind: 'request_response',
+        nodeId: req.originNodeId,
+        requestId: req.id,
+        causeEventId,
+        payload: {
+          toNodeId: req.originNodeId,
+          success: false,
+          durationMs: at - req.arrivedAt,
+          abandoned: true,
+        },
+      }
+      this.log.append(ev)
+      this.onEvent(ev)
+      this.maybeFinalize(ev, req)
+    }
   }
 
   private maybeFinalize(ev: SimEvent, request: SimRequest | undefined): void {
